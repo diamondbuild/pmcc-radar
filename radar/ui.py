@@ -107,14 +107,15 @@ def cell_strike_leg(strike, expiry, cost_or_prem, delta, is_leap: bool) -> str:
     label = "LEAP" if is_leap else "SHORT"
     label_color = BLUE if is_leap else WARN
     exp_short = _esc(expiry)
-    # shorten expiry: 2027-07-16 → Jul '27
+    # shorten expiry: 2027-07-16 → Jul 16 '27  (day matters for option pricing)
     try:
         parts = exp_short.split("-")
         if len(parts) == 3:
             months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
             mm = int(parts[1])
-            exp_short = f"{months[mm-1]} '{parts[0][-2:]}"
+            dd = int(parts[2])
+            exp_short = f"{months[mm-1]} {dd} '{parts[0][-2:]}"
     except Exception:
         pass
     cost_str = f"${cost_or_prem:,.0f}" if _is_num(cost_or_prem) else "—"
