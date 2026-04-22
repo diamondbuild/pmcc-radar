@@ -31,7 +31,11 @@ st.markdown(
     f"""
     <style>
     .stApp {{ background: {ui.BG}; color: {ui.TEXT}; }}
-    .block-container {{ padding-top: 1rem; padding-bottom: 2rem; max-width: 1400px; }}
+    /* Hide Streamlit's top toolbar & deploy button — they overlap the title on iPhone */
+    header[data-testid="stHeader"] {{ display: none !important; }}
+    #MainMenu {{ display: none !important; }}
+    footer {{ display: none !important; }}
+    .block-container {{ padding-top: 1.5rem; padding-bottom: 2rem; max-width: 1400px; }}
     section[data-testid="stSidebar"] {{ background: {ui.SURFACE}; }}
     h1, h2, h3 {{ color: {ui.TEXT}; font-weight: 700; }}
     .stButton > button {{
@@ -61,8 +65,10 @@ st.markdown(
                     letter-spacing: 0.5px; font-weight: 600; }}
     .metric-value {{ color: {ui.TEXT}; font-size: 18px; font-weight: 700; margin-top: 4px; }}
     @media (max-width: 640px) {{
-        .block-container {{ padding: 0.5rem; }}
+        .block-container {{ padding: 0.75rem 0.5rem 1rem 0.5rem; }}
         .metric-value {{ font-size: 14px; }}
+        .pmcc-title h1 {{ font-size: 20px; }}
+        .pmcc-title .tag {{ font-size: 9px; padding: 2px 6px; }}
     }}
     </style>
     """,
