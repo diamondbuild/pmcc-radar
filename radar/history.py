@@ -11,8 +11,10 @@ AGGREGATE_PATH = os.path.join(HIST_DIR, "aggregate.csv")
 
 SNAPSHOT_COLS = [
     "ticker", "spot", "score", "annualized_yield", "static_yield",
-    "leap_expiry", "leap_strike", "leap_cost", "leap_delta", "leap_iv", "leap_oi",
-    "short_expiry", "short_strike", "short_premium", "short_delta", "short_oi",
+    "leap_expiry", "leap_dte", "leap_strike", "leap_cost", "leap_delta",
+    "leap_iv", "leap_oi", "leap_spread",
+    "short_expiry", "short_dte", "short_strike", "short_premium",
+    "short_delta", "short_iv", "short_oi", "short_spread",
     "breakeven", "max_profit", "max_loss", "net_debit", "upside_cap_pct",
     "iv_rank", "earnings_before_short_expiry", "next_earnings", "warnings",
     "scanned_at",

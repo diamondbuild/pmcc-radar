@@ -19,6 +19,54 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from radar import history, pipeline, ui, universe
 
 
+def _safe_int(v, default=0):
+    try:
+        if v is None:
+            return default
+        f = float(v)
+        if pd.isna(f):
+            return default
+        return int(f)
+    except Exception:
+        return default
+
+
+def _safe_float(v, default=float("nan")):
+    try:
+        if v is None:
+            return default
+        f = float(v)
+        return default if pd.isna(f) else f
+    except Exception:
+        return default
+
+
+def _dte_from_expiry(expiry_str: str) -> int:
+    """Compute days-to-expiry from ISO date string. Returns 0 on failure."""
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        exp = _dt.strptime(str(expiry_str), "%Y-%m-%d").replace(tzinfo=_tz.utc)
+        return max(0, (exp - _dt.now(_tz.utc)).days)
+    except Exception:
+        return 0
+
+
+def _get(row, key, default=None):
+    """Safe getter for pandas Series — returns default if key absent/NaN."""
+    try:
+        v = row[key] if key in row.index else default
+    except Exception:
+        v = default
+    if v is None:
+        return default
+    try:
+        if isinstance(v, float) and pd.isna(v):
+            return default
+    except Exception:
+        pass
+    return v
+
+
 # --------------------------------------------------------- Page + global CSS
 st.set_page_config(
     page_title="PMCC Radar",
@@ -246,10 +294,35 @@ with tabs[1]:
         pick = st.selectbox("Ticker", tickers, index=0)
         row = df[df["ticker"] == pick].iloc[0]
 
-        st.markdown(f"### {pick} — ${row['spot']:.2f}")
+        # Safe field reads (old snapshots may miss columns)
+        spot = _safe_float(_get(row, "spot"))
+        score = _safe_float(_get(row, "score"), 0.0)
+        leap_expiry = _get(row, "leap_expiry", "") or ""
+        leap_dte = _safe_int(_get(row, "leap_dte")) or _dte_from_expiry(leap_expiry)
+        leap_strike = _safe_float(_get(row, "leap_strike"))
+        leap_cost = _safe_float(_get(row, "leap_cost"))
+        leap_delta = _safe_float(_get(row, "leap_delta"))
+        leap_iv = _safe_float(_get(row, "leap_iv"))
+        leap_oi = _safe_int(_get(row, "leap_oi"))
+        short_expiry = _get(row, "short_expiry", "") or ""
+        short_dte = _safe_int(_get(row, "short_dte")) or _dte_from_expiry(short_expiry)
+        short_strike = _safe_float(_get(row, "short_strike"))
+        short_premium = _safe_float(_get(row, "short_premium"))
+        short_delta = _safe_float(_get(row, "short_delta"))
+        short_iv = _safe_float(_get(row, "short_iv"))
+        short_oi = _safe_int(_get(row, "short_oi"))
+        net_debit = _safe_float(_get(row, "net_debit"))
+        max_profit = _safe_float(_get(row, "max_profit"))
+        max_loss = _safe_float(_get(row, "max_loss"))
+        static_yield = _safe_float(_get(row, "static_yield"), 0.0)
+        annualized = _safe_float(_get(row, "annualized_yield"), 0.0)
+        breakeven = _safe_float(_get(row, "breakeven"))
+        upside_cap = _safe_float(_get(row, "upside_cap_pct"), 0.0)
+
+        st.markdown(f"### {pick} — ${spot:.2f}")
         st.markdown(
             f'<div style="color:{ui.MUTED};font-size:12px;margin-bottom:12px;">'
-            f'PMCC Score: <b style="color:{ui.ACCENT}">{row["score"]:.1f}</b> / 100'
+            f'PMCC Score: <b style="color:{ui.ACCENT}">{score:.1f}</b> / 100'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -258,61 +331,62 @@ with tabs[1]:
         with cols[0]:
             st.markdown("#### 🛒 Buy (LEAP)")
             st.markdown(
-                f'**Expiry:** {row["leap_expiry"]} ({int(row["leap_dte"])} DTE)  \n'
-                f'**Strike:** ${row["leap_strike"]:g}  \n'
-                f'**Cost:** ${row["leap_cost"]:,.0f}  \n'
-                f'**Delta:** {row["leap_delta"]:.2f}  \n'
-                f'**IV:** {row["leap_iv"]*100:.1f}%  \n'
-                f'**OI:** {int(row["leap_oi"])}'
+                f'**Expiry:** {leap_expiry} ({leap_dte} DTE)  \n'
+                f'**Strike:** ${leap_strike:g}  \n'
+                f'**Cost:** ${leap_cost:,.0f}  \n'
+                f'**Delta:** {leap_delta:.2f}  \n'
+                f'**IV:** {leap_iv*100:.1f}%  \n'
+                f'**OI:** {leap_oi}'
             )
         with cols[1]:
             st.markdown("#### 💰 Sell (Short Call)")
             st.markdown(
-                f'**Expiry:** {row["short_expiry"]} ({int(row["short_dte"])} DTE)  \n'
-                f'**Strike:** ${row["short_strike"]:g}  \n'
-                f'**Premium:** ${row["short_premium"]:,.0f}  \n'
-                f'**Delta:** {row["short_delta"]:.2f}  \n'
-                f'**IV:** {row["short_iv"]*100:.1f}%  \n'
-                f'**OI:** {int(row["short_oi"])}'
+                f'**Expiry:** {short_expiry} ({short_dte} DTE)  \n'
+                f'**Strike:** ${short_strike:g}  \n'
+                f'**Premium:** ${short_premium:,.0f}  \n'
+                f'**Delta:** {short_delta:.2f}  \n'
+                f'**IV:** {short_iv*100:.1f}%  \n'
+                f'**OI:** {short_oi}'
             )
 
         st.markdown("#### 📊 Economics")
         e1, e2, e3, e4 = st.columns(4)
         with e1:
-            st.metric("Net Debit", f"${row['net_debit']:,.0f}")
+            st.metric("Net Debit", f"${net_debit:,.0f}")
         with e2:
-            st.metric("Max Profit", f"${row['max_profit']:,.0f}")
+            st.metric("Max Profit", f"${max_profit:,.0f}")
         with e3:
-            st.metric("Static Yield", f"{row['static_yield']*100:.1f}%")
+            st.metric("Static Yield", f"{static_yield*100:.1f}%")
         with e4:
-            st.metric("Annualized", f"{row['annualized_yield']*100:.1f}%")
+            st.metric("Annualized", f"{annualized*100:.1f}%")
 
         f1, f2, f3 = st.columns(3)
         with f1:
-            st.metric("Breakeven", f"${row['breakeven']:.2f}")
+            st.metric("Breakeven", f"${breakeven:.2f}")
         with f2:
-            st.metric("Upside Cap", f"{row['upside_cap_pct']*100:.1f}%")
+            st.metric("Upside Cap", f"{upside_cap*100:.1f}%")
         with f3:
-            st.metric("Max Loss", f"${row['max_loss']:,.0f}")
+            st.metric("Max Loss", f"${max_loss:,.0f}")
 
-        if row.get("warnings") or row.get("earnings_before_short_expiry"):
+        warnings_str = _get(row, "warnings", "") or ""
+        earn_flag = bool(_get(row, "earnings_before_short_expiry", False))
+        if warnings_str or earn_flag:
             st.markdown("#### ⚠ Flags")
-            flags = []
-            if row.get("earnings_before_short_expiry"):
-                flags.append(f"**Earnings risk**: next earnings {row.get('next_earnings', 'TBD')} "
-                            f"falls before short expiry ({row['short_expiry']})")
-            if row.get("warnings"):
-                flags.append(f"**Liquidity**: {row['warnings']}")
-            for f in flags:
-                st.warning(f)
+            if earn_flag:
+                st.warning(
+                    f"**Earnings risk**: next earnings {_get(row, 'next_earnings', 'TBD')} "
+                    f"falls before short expiry ({short_expiry})"
+                )
+            if warnings_str:
+                st.warning(f"**Liquidity**: {warnings_str}")
         else:
             st.success("Clean setup — no liquidity or earnings red flags.")
 
         st.markdown("#### 📋 Order Ticket")
         st.code(
-            f"BUY  +1  {pick}  {row['leap_expiry']}  {row['leap_strike']:g}C  LMT ~${row['leap_cost']/100:.2f}\n"
-            f"SELL -1  {pick}  {row['short_expiry']}  {row['short_strike']:g}C  LMT ~${row['short_premium']/100:.2f}\n"
-            f"Net debit: ~${row['net_debit']:,.0f}",
+            f"BUY  +1  {pick}  {leap_expiry}  {leap_strike:g}C  LMT ~${leap_cost/100:.2f}\n"
+            f"SELL -1  {pick}  {short_expiry}  {short_strike:g}C  LMT ~${short_premium/100:.2f}\n"
+            f"Net debit: ~${net_debit:,.0f}",
             language="text",
         )
 
