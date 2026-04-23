@@ -386,22 +386,28 @@ with tabs[1]:
         with cols[0]:
             st.markdown("#### 🛒 Buy (LEAP)")
             st.markdown(
-                f'**Expiry:** {leap_expiry} ({leap_dte} DTE)  \n'
-                f'**Strike:** ${leap_strike:g}  \n'
-                f'**Cost:** ${leap_cost:,.0f}  \n'
-                f'**Delta:** {leap_delta:.2f}  \n'
-                f'**IV:** {leap_iv*100:.1f}%  \n'
-                f'**OI:** {leap_oi}'
+                f'<div style="line-height:1.8;font-size:14px;">'
+                f'<b>Expiry:</b> {leap_expiry} ({leap_dte} DTE)<br/>'
+                f'<b>Strike:</b> ${leap_strike:g}<br/>'
+                f'<b>Cost:</b> ${leap_cost:,.0f}<br/>'
+                f'<b>Delta:</b> {leap_delta:.2f}<br/>'
+                f'<b>IV:</b> {leap_iv*100:.1f}%<br/>'
+                f'<b>OI:</b> {leap_oi}'
+                f'</div>',
+                unsafe_allow_html=True,
             )
         with cols[1]:
             st.markdown("#### 💰 Sell (Short Call)")
             st.markdown(
-                f'**Expiry:** {short_expiry} ({short_dte} DTE)  \n'
-                f'**Strike:** ${short_strike:g}  \n'
-                f'**Premium:** ${short_premium:,.0f}  \n'
-                f'**Delta:** {short_delta:.2f}  \n'
-                f'**IV:** {short_iv*100:.1f}%  \n'
-                f'**OI:** {short_oi}'
+                f'<div style="line-height:1.8;font-size:14px;">'
+                f'<b>Expiry:</b> {short_expiry} ({short_dte} DTE)<br/>'
+                f'<b>Strike:</b> ${short_strike:g}<br/>'
+                f'<b>Premium:</b> ${short_premium:,.0f}<br/>'
+                f'<b>Delta:</b> {short_delta:.2f}<br/>'
+                f'<b>IV:</b> {short_iv*100:.1f}%<br/>'
+                f'<b>OI:</b> {short_oi}'
+                f'</div>',
+                unsafe_allow_html=True,
             )
 
         st.markdown("#### 📊 Economics")
