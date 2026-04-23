@@ -1,4 +1,4 @@
-# v2026-04-23-broader-universe
+# v2026-04-23-universe-fix
 streamlit>=1.32
 yfinance>=0.2.40
 pandas>=2.1
@@ -6,3 +6,6 @@ numpy>=1.26
 plotly>=5.20
 requests>=2.31
 scipy>=1.11
+lxml>=5.0
+html5lib>=1.1
+beautifulsoup4>=4.12

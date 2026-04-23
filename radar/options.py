@@ -365,8 +365,10 @@ def analyze_ticker(
         # and the trade captures no actual gain.
         if upside_cap < 0.01:
             return None
-        # Annualized yield over 200% is almost certainly a data artifact, not an opportunity.
-        if annualized > 2.0:
+        # Annualized yield over 80% is almost certainly a data artifact.
+        # Real PMCCs on liquid names: 15-40%. Anything above 80% reflects a
+        # stale bid, thin market, or single-strike anomaly. Reject.
+        if annualized > 0.80:
             return None
         # Short premium must be meaningful — at least $20 per contract, and at
         # least 0.3% of net debit. Otherwise the income thesis collapses.

@@ -6,6 +6,7 @@ Cached to disk for 24h so Streamlit Cloud doesn't re-fetch every rerun.
 """
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
@@ -48,31 +49,68 @@ LIQUID_ETFS = [
 ]
 
 
-def _fetch_wikipedia_table(url: str, table_index: int, symbol_col: str) -> List[str]:
-    """Generic Wikipedia table fetcher that returns a clean ticker list."""
+def _clean_tickers(raw_list) -> List[str]:
+    """Clean a list of raw ticker strings: handle dots→dashes, strip suffixes."""
+    out = set()
+    for s in raw_list:
+        s = str(s).strip().upper()
+        if not s or not s.isascii():
+            continue
+        # Strip common Wikipedia reference footnotes like [1], †, *, etc
+        for bad in ["[", "]", "†", "*", "‡"]:
+            s = s.split(bad)[0].strip()
+        # Yahoo uses BRK-B, BF-B (not BRK.B)
+        s = s.replace(".", "-")
+        if 1 <= len(s) <= 6 and s.replace("-", "").isalnum():
+            out.add(s)
+    return sorted(out)
+
+
+def _find_ticker_tables(url: str, min_rows: int = 50) -> List[List[str]]:
+    """Fetch a Wikipedia page and return all tables with a Ticker/Symbol column.
+
+    pd.read_html sometimes returns tables with multi-level headers; we flatten
+    columns so lookups by simple string name work.
+    """
     headers = {"User-Agent": "pmcc-radar/1.0 (education; github.com)"}
-    resp = requests.get(url, headers=headers, timeout=20)
+    resp = requests.get(url, headers=headers, timeout=30)
     resp.raise_for_status()
-    tables = pd.read_html(resp.text)
-    df = tables[table_index]
-    if symbol_col not in df.columns:
-        # Try common alternative column names
-        for alt in ["Ticker", "Symbol", "Code", "Ticker symbol"]:
-            if alt in df.columns:
-                symbol_col = alt
-                break
-    syms = df[symbol_col].astype(str).str.replace(".", "-", regex=False).tolist()
-    # Drop anything weird; keep only clean ASCII tickers 1-6 chars
-    return sorted({s.strip() for s in syms if s and s.isascii() and 1 <= len(s.strip()) <= 6})
+    # pd.read_html in newer pandas requires a file-like object, not raw string
+    try:
+        tables = pd.read_html(io.StringIO(resp.text))
+    except ValueError as e:
+        log.warning(f"No HTML tables in {url}: {e}")
+        return []
+
+    ticker_candidates = ["Ticker", "Symbol", "Ticker symbol", "Code", "TICKER", "SYMBOL"]
+    results = []
+    for t in tables:
+        # Flatten multi-level columns if needed
+        if isinstance(t.columns, pd.MultiIndex):
+            t.columns = [" ".join([str(x) for x in col if str(x) != "nan"]).strip() for col in t.columns]
+        cols = [str(c).strip() for c in t.columns]
+        t.columns = cols
+        if len(t) < min_rows:
+            continue
+        for cand in ticker_candidates:
+            # Exact match or substring (e.g. "Ticker" matches "Ticker symbol")
+            matching = [c for c in cols if c == cand or cand.lower() in c.lower()]
+            if matching:
+                col = matching[0]
+                syms = _clean_tickers(t[col].tolist())
+                if len(syms) >= min_rows // 2:  # sanity check
+                    results.append(syms)
+                    break
+    return results
 
 
 def _fetch_sp500() -> List[str]:
     try:
-        return _fetch_wikipedia_table(
+        tables = _find_ticker_tables(
             "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
-            table_index=0,
-            symbol_col="Symbol",
+            min_rows=400,
         )
+        return tables[0] if tables else []
     except Exception as e:
         log.warning(f"S&P 500 fetch failed: {e}")
         return []
@@ -80,20 +118,12 @@ def _fetch_sp500() -> List[str]:
 
 def _fetch_nasdaq100() -> List[str]:
     try:
-        # Nasdaq-100 Wikipedia page — table index varies, try a few
-        headers = {"User-Agent": "pmcc-radar/1.0 (education; github.com)"}
-        resp = requests.get(
-            "https://en.wikipedia.org/wiki/Nasdaq-100", headers=headers, timeout=20
+        tables = _find_ticker_tables(
+            "https://en.wikipedia.org/wiki/Nasdaq-100", min_rows=80
         )
-        resp.raise_for_status()
-        tables = pd.read_html(resp.text)
-        # Find the table with a "Ticker" or "Symbol" column AND > 50 rows (the constituents)
-        for t in tables:
-            cols = [c for c in t.columns]
-            for sym_col in ["Ticker", "Symbol"]:
-                if sym_col in cols and len(t) >= 50:
-                    syms = t[sym_col].astype(str).str.replace(".", "-", regex=False).tolist()
-                    return sorted({s.strip() for s in syms if s and s.isascii() and 1 <= len(s.strip()) <= 6})
+        # Prefer the biggest matching table (the constituents list)
+        if tables:
+            return max(tables, key=len)
         return []
     except Exception as e:
         log.warning(f"Nasdaq 100 fetch failed: {e}")
@@ -102,27 +132,12 @@ def _fetch_nasdaq100() -> List[str]:
 
 def _fetch_russell1000() -> List[str]:
     try:
-        headers = {"User-Agent": "pmcc-radar/1.0 (education; github.com)"}
-        resp = requests.get(
-            "https://en.wikipedia.org/wiki/Russell_1000_Index",
-            headers=headers,
-            timeout=20,
+        tables = _find_ticker_tables(
+            "https://en.wikipedia.org/wiki/Russell_1000_Index", min_rows=400
         )
-        resp.raise_for_status()
-        tables = pd.read_html(resp.text)
-        # The Russell 1000 constituents table is the largest one with Ticker/Symbol
-        best = None
-        for t in tables:
-            cols = list(t.columns)
-            for sym_col in ["Ticker", "Symbol"]:
-                if sym_col in cols and len(t) >= 500:
-                    if best is None or len(t) > len(best):
-                        best = t
-                        best_col = sym_col
-        if best is None:
-            return []
-        syms = best[best_col].astype(str).str.replace(".", "-", regex=False).tolist()
-        return sorted({s.strip() for s in syms if s and s.isascii() and 1 <= len(s.strip()) <= 6})
+        if tables:
+            return max(tables, key=len)
+        return []
     except Exception as e:
         log.warning(f"Russell 1000 fetch failed: {e}")
         return []
