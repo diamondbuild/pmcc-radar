@@ -155,6 +155,22 @@ class PMCCResult:
     warnings: str
 
 
+def _sane_iv(iv: float) -> bool:
+    """Reject bogus IVs from yfinance. Realistic range: 5% to 300%.
+
+    yfinance often returns iv=0 (missing), iv=10 (placeholder), or wildly
+    extrapolated values on thin strikes. These produce garbage Black-Scholes
+    deltas of exactly 0 or 1, which then slip through range filters.
+    """
+    try:
+        v = float(iv)
+    except (TypeError, ValueError):
+        return False
+    if math.isnan(v) or math.isinf(v):
+        return False
+    return 0.05 <= v <= 3.0
+
+
 def _select_leap(
     chain: pd.DataFrame,
     spot: float,
@@ -172,13 +188,23 @@ def _select_leap(
     df = df[df["strike"] < spot]  # ITM only for LEAP
     if df.empty:
         return None
+    # Reject rows with unusable IV — delta would be garbage
+    df = df[df["impliedVolatility"].apply(_sane_iv)]
+    if df.empty:
+        return None
     # Compute delta for each row
     df["delta"] = df.apply(
         lambda r: bs_call_delta(
-            spot, float(r["strike"]), float(r["dte"]), float(r.get("impliedVolatility", 0))
+            spot, float(r["strike"]), float(r["dte"]), float(r["impliedVolatility"])
         ),
         axis=1,
     )
+    # Drop any NaN deltas that survived
+    df = df[df["delta"].notna()]
+    # Hard cap: never accept delta > 0.97 (functionally the stock itself)
+    df = df[df["delta"] <= 0.97]
+    if df.empty:
+        return None
     # Prefer target band; else closest to midpoint
     mid_target = (target_delta_min + target_delta_max) / 2
     in_band = df[(df["delta"] >= target_delta_min) & (df["delta"] <= target_delta_max)]
@@ -186,8 +212,8 @@ def _select_leap(
         # Among in-band, pick highest OI (liquidity)
         in_band = in_band.sort_values("openInterest", ascending=False)
         return in_band.iloc[0]
-    # Otherwise closest delta to target, requiring at least 0.70
-    df = df[df["delta"] >= 0.70]
+    # Otherwise closest delta to target, requiring 0.70 ≤ delta ≤ 0.95
+    df = df[(df["delta"] >= 0.70) & (df["delta"] <= 0.95)]
     if df.empty:
         return None
     df["delta_gap"] = (df["delta"] - mid_target).abs()
@@ -210,19 +236,29 @@ def _select_short(
     df = df[df["strike"] > leap_strike]
     if df.empty:
         return None
+    # Reject rows with unusable IV
+    df = df[df["impliedVolatility"].apply(_sane_iv)]
+    if df.empty:
+        return None
     df["delta"] = df.apply(
         lambda r: bs_call_delta(
-            spot, float(r["strike"]), float(r["dte"]), float(r.get("impliedVolatility", 0))
+            spot, float(r["strike"]), float(r["dte"]), float(r["impliedVolatility"])
         ),
         axis=1,
     )
+    df = df[df["delta"].notna()]
+    # Hard cap: a "short call" with delta > 0.45 is no longer OTM time-value—
+    # it's effectively synthetic stock. Reject those entirely.
+    df = df[df["delta"] <= 0.45]
+    if df.empty:
+        return None
     in_band = df[(df["delta"] >= target_delta_min) & (df["delta"] <= target_delta_max)]
     if not in_band.empty:
         # Best premium / liquidity tradeoff: highest mid among in-band with OI > 10
         liquid = in_band[in_band["openInterest"].fillna(0) > 10]
         pick = liquid if not liquid.empty else in_band
         return pick.sort_values("mid", ascending=False).iloc[0]
-    # Fallback: closest to 25 delta
+    # Fallback: closest to 25 delta within 0.10–0.45
     df = df[df["delta"] > 0.10]
     if df.empty:
         return None
@@ -309,14 +345,27 @@ def analyze_ticker(
         leap_cost = float(leap["mid"]) * 100.0
         short_prem = float(short["mid"]) * 100.0
         net_debit = leap_cost - short_prem
+        # Net debit must be positive (you're paying to open a PMCC)
+        if net_debit <= 0:
+            return None
         # Max profit: (short_strike - leap_strike) * 100 - net_debit
         max_profit = (float(short["strike"]) - float(leap["strike"])) * 100.0 - net_debit
+        # Max profit must be positive — otherwise the trade is structurally unprofitable
+        if max_profit <= 0:
+            return None
         max_loss = net_debit  # if LEAP goes to zero
         breakeven = float(leap["strike"]) + (net_debit / 100.0)
         static_yield = short_prem / net_debit if net_debit > 0 else 0.0
         short_dte = int(short["dte"]) or 30
         annualized = static_yield * (365.0 / short_dte)
         upside_cap = (float(short["strike"]) - spot) / spot
+        # Upside cap must leave at least 1% room; otherwise assignment is near-certain
+        # and the trade captures no actual gain.
+        if upside_cap < 0.01:
+            return None
+        # Annualized yield over 200% is almost certainly a data artifact, not an opportunity.
+        if annualized > 2.0:
+            return None
 
         # Earnings flag — if earnings falls before short expiry, it's a red flag
         earn = _earnings_date(tk)
