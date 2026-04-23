@@ -203,20 +203,7 @@ st.session_state["use_ibkr"] = use_ibkr
 
 
 # ------------------------------------------------------------ Scan / load logic
-col_a, col_b = st.columns([1, 1])
-with col_a:
-    run_clicked = st.button("▶ Run scan", type="primary", use_container_width=True)
-with col_b:
-    refresh_clicked = st.button("↻ Reload latest", use_container_width=True)
-
-if refresh_clicked:
-    latest = history.latest_snapshot()
-    if latest.empty:
-        st.warning("No saved scans yet — run one.")
-    else:
-        st.session_state["scan_df"] = latest
-        st.session_state["last_scan_ts"] = latest["scanned_at"].iloc[0] if "scanned_at" in latest.columns else None
-        st.rerun()
+run_clicked = st.button("▶ Run scan", type="primary", use_container_width=True)
 
 
 if run_clicked:
@@ -253,7 +240,7 @@ if run_clicked:
             limit=int(limit),
             force_refresh_universe=force_refresh,
             use_ibkr=use_ibkr_flag,
-            ibkr_top_n=20,
+            ibkr_top_n=5,
             refine_progress_cb=_refine_cb if use_ibkr_flag else None,
         )
     except Exception as e:
