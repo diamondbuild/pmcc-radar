@@ -195,7 +195,10 @@ def evaluate_positions(positions: list[dict]) -> list[Alert]:
                         f"Short call at ${mark:.2f} with {dte}d left. Let it expire "
                         f"or buy to close for pennies and sell a fresh 30-45 DTE call."
                     ),
-                    metrics={"strike": strike, "dte": dte, "mark": mark, "avg_cost": avg},
+                    metrics={
+                        "symbol": s["symbol"], "strike": strike, "dte": dte,
+                        "mark": mark, "avg_cost": avg, "qty": s["qty"],
+                    },
                 ))
                 continue
 
@@ -221,8 +224,8 @@ def evaluate_positions(positions: list[dict]) -> list[Alert]:
                         f"the premium stream going.{roll_txt}"
                     ),
                     metrics={
-                        "strike": strike, "dte": dte, "mark": mark,
-                        "spot": spot_px, "roll": roll,
+                        "symbol": s["symbol"], "strike": strike, "dte": dte,
+                        "mark": mark, "qty": s["qty"], "spot": spot_px, "roll": roll,
                     },
                 ))
                 continue
@@ -248,8 +251,8 @@ def evaluate_positions(positions: list[dict]) -> list[Alert]:
                         f"raise your cap.{roll_txt}"
                     ),
                     metrics={
-                        "strike": strike, "dte": dte, "mark": mark,
-                        "spot": spot_px, "roll": roll,
+                        "symbol": s["symbol"], "strike": strike, "dte": dte,
+                        "mark": mark, "qty": s["qty"], "spot": spot_px, "roll": roll,
                     },
                 ))
                 continue

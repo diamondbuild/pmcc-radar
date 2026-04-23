@@ -18,7 +18,7 @@ import streamlit as st
 # Make local package importable when run from Streamlit Cloud
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from radar import history, pipeline, position_monitor, tastytrade as tt, ui, universe
+from radar import history, pipeline, position_monitor, tastytrade as tt, tt_orders, ui, universe
 
 # Streamlit Cloud injects st.secrets into the environment at startup.
 # Map TT_* secrets to env vars so radar.tastytrade picks them up.
@@ -50,6 +50,167 @@ def _safe_float(v, default=float("nan")):
         return default if pd.isna(f) else f
     except Exception:
         return default
+
+
+# ------------------------------------------------------------ Trade dialogs
+@st.dialog("Confirm PMCC order")
+def _confirm_pmcc_dialog(row_key: str):
+    """Show dry-run preview and a Submit button for a PMCC opening order.
+    row_key is the session_state key holding the pre-built (order, details) pair.
+    """
+    stash = st.session_state.get(row_key)
+    if not stash:
+        st.error("Trade details missing. Close and re-tap Trade.")
+        return
+    order, details = stash
+
+    st.markdown(
+        f"**{details['ticker']} PMCC** · qty {details['qty']} · "
+        f"LIMIT **${abs(details['net_mid']):.2f} {details['price_effect']}** · DAY"
+    )
+    for L in details["legs"]:
+        action_color = ui.BLUE if "Buy" in L["action"] else ui.WARN
+        st.markdown(
+            f'<div style="padding:6px 10px;background:rgba(255,255,255,0.04);'
+            f'border-radius:4px;margin:4px 0;font-size:13px;">'
+            f'<span style="color:{action_color};font-weight:600;">{L["action"]}</span> '
+            f'<span style="color:{ui.TEXT};">{L["symbol"].strip()}</span> '
+            f'<span style="color:{ui.MUTED};">@ mid ${L["mid"]:.2f}</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    est_cost = details.get("est_cost") or 0
+    st.markdown(
+        f'<div style="color:{ui.MUTED};font-size:12px;margin-top:6px;">'
+        f'Estimated net debit: <b style="color:{ui.TEXT}">${est_cost:,.2f}</b> '
+        f'(per contract × qty)</div>',
+        unsafe_allow_html=True,
+    )
+
+    preview_key = f"{row_key}_preview"
+    if preview_key not in st.session_state:
+        with st.spinner("Running dry-run check against Tastytrade…"):
+            st.session_state[preview_key] = tt_orders.preview_order(order)
+    prev = st.session_state[preview_key]
+
+    if prev["warnings"]:
+        for w in prev["warnings"]:
+            st.warning(w)
+    if prev["errors"]:
+        for e in prev["errors"]:
+            st.error(e)
+    else:
+        bp = prev.get("bp_change")
+        fees = prev.get("fees_total")
+        lines = []
+        if bp is not None:
+            lines.append(f"Buying-power effect: ${float(bp):,.2f}")
+        if fees is not None:
+            lines.append(f"Estimated fees: ${float(fees):,.2f}")
+        if lines:
+            st.markdown(
+                f'<div style="color:{ui.MUTED};font-size:12px;">'
+                + " · ".join(lines) + "</div>",
+                unsafe_allow_html=True,
+            )
+
+    # Submit / cancel row
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Cancel", use_container_width=True, key=f"{row_key}_cancel"):
+            st.session_state.pop(preview_key, None)
+            st.session_state.pop(row_key, None)
+            st.rerun()
+    with c2:
+        disabled = not prev["ok"]
+        if st.button("Submit to Tastytrade", type="primary",
+                     use_container_width=True, disabled=disabled,
+                     key=f"{row_key}_submit"):
+            with st.spinner("Submitting order…"):
+                result = tt_orders.submit_order(order)
+            if result["ok"]:
+                st.success(
+                    f"Order submitted. ID {result.get('order_id')} · "
+                    f"status {result.get('status')}. Review in Tastytrade."
+                )
+                st.session_state.pop(preview_key, None)
+                st.session_state.pop(row_key, None)
+            else:
+                for e in result["errors"]:
+                    st.error(e)
+
+
+@st.dialog("Confirm roll")
+def _confirm_roll_dialog(row_key: str):
+    """Show dry-run preview and a Submit button for a short-call roll."""
+    stash = st.session_state.get(row_key)
+    if not stash:
+        st.error("Trade details missing. Close and re-tap Roll.")
+        return
+    order, details = stash
+
+    effect = details["price_effect"]
+    net = abs(details["net_mid"])
+    st.markdown(
+        f"**{details['ticker']} roll** · qty {details['qty']} · "
+        f"LIMIT **${net:.2f} {effect}** · DAY"
+    )
+    for L in details["legs"]:
+        action_color = ui.DANGER if "Close" in L["action"] else ui.WARN
+        st.markdown(
+            f'<div style="padding:6px 10px;background:rgba(255,255,255,0.04);'
+            f'border-radius:4px;margin:4px 0;font-size:13px;">'
+            f'<span style="color:{action_color};font-weight:600;">{L["action"]}</span> '
+            f'<span style="color:{ui.TEXT};">{L["symbol"].strip()}</span> '
+            f'<span style="color:{ui.MUTED};">@ mid ${L["mid"]:.2f}</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    est = details.get("est_credit") or 0
+    est_label = "Estimated net credit" if est >= 0 else "Estimated net debit"
+    st.markdown(
+        f'<div style="color:{ui.MUTED};font-size:12px;margin-top:6px;">'
+        f'{est_label}: <b style="color:{ui.TEXT}">${abs(est):,.2f}</b></div>',
+        unsafe_allow_html=True,
+    )
+
+    preview_key = f"{row_key}_preview"
+    if preview_key not in st.session_state:
+        with st.spinner("Running dry-run check against Tastytrade…"):
+            st.session_state[preview_key] = tt_orders.preview_order(order)
+    prev = st.session_state[preview_key]
+
+    if prev["warnings"]:
+        for w in prev["warnings"]:
+            st.warning(w)
+    if prev["errors"]:
+        for e in prev["errors"]:
+            st.error(e)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Cancel", use_container_width=True, key=f"{row_key}_cancel"):
+            st.session_state.pop(preview_key, None)
+            st.session_state.pop(row_key, None)
+            st.rerun()
+    with c2:
+        disabled = not prev["ok"]
+        if st.button("Submit to Tastytrade", type="primary",
+                     use_container_width=True, disabled=disabled,
+                     key=f"{row_key}_submit"):
+            with st.spinner("Submitting roll…"):
+                result = tt_orders.submit_order(order)
+            if result["ok"]:
+                st.success(
+                    f"Roll submitted. ID {result.get('order_id')} · "
+                    f"status {result.get('status')}. Review in Tastytrade."
+                )
+                st.session_state.pop(preview_key, None)
+                st.session_state.pop(row_key, None)
+            else:
+                for e in result["errors"]:
+                    st.error(e)
 
 
 def _dte_from_expiry(expiry_str: str) -> int:
@@ -330,10 +491,20 @@ with tabs[0]:
             if _action_ct:
                 _head += f" · {_action_ct} need attention"
             with st.expander(f"🔔 {_head}", expanded=bool(_action_ct)):
-                for a in _alerts:
+                for ai, a in enumerate(_alerts):
                     color = _sev_color.get(a.severity, ui.MUTED)
                     badge = _sev_label.get(a.severity, a.severity.upper())
-                    st.markdown(
+                    roll = (a.metrics or {}).get("roll")
+                    close_sym = (a.metrics or {}).get("symbol")
+                    close_mark = (a.metrics or {}).get("mark")
+                    qty = int((a.metrics or {}).get("qty") or 1)
+                    can_roll = bool(
+                        roll and roll.get("mid") and close_sym and close_mark
+                        and a.leg == "short_call"
+                    )
+                    # Render alert box + optional roll button side-by-side
+                    show_button = can_roll and tt.is_configured()
+                    alert_html = (
                         f'<div style="border-left:3px solid {color};padding:8px 12px;'
                         f'margin:6px 0;background:rgba(255,255,255,0.02);border-radius:4px;">'
                         f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">'
@@ -342,9 +513,33 @@ with tabs[0]:
                         f'<span style="color:{ui.TEXT};font-weight:600;font-size:13px;">{a.title}</span>'
                         f'</div>'
                         f'<div style="color:{ui.MUTED};font-size:12px;line-height:1.5;">{a.detail}</div>'
-                        f'</div>',
-                        unsafe_allow_html=True,
+                        f'</div>'
                     )
+                    if show_button:
+                        ac1, ac2 = st.columns([5, 1.3])
+                        with ac1:
+                            st.markdown(alert_html, unsafe_allow_html=True)
+                        with ac2:
+                            if st.button("Roll", key=f"roll_btn_{a.underlying}_{ai}",
+                                         use_container_width=True):
+                                try:
+                                    order, details = tt_orders.build_short_roll(
+                                        under=a.underlying,
+                                        close_symbol=close_sym,
+                                        close_mid=float(close_mark),
+                                        roll_expiry=str(roll["expiry"]),
+                                        roll_strike=float(roll["strike"]),
+                                        roll_mid=float(roll["mid"]),
+                                        qty=qty,
+                                    )
+                                    stash_key = f"roll_order_{a.underlying}_{ai}"
+                                    st.session_state[stash_key] = (order, details)
+                                    st.session_state.pop(f"{stash_key}_preview", None)
+                                    _confirm_roll_dialog(stash_key)
+                                except Exception as e:
+                                    st.error(f"Could not build roll: {e}")
+                    else:
+                        st.markdown(alert_html, unsafe_allow_html=True)
 
         # Summary strip
         c1, c2, c3, c4 = st.columns(4)
@@ -377,6 +572,86 @@ with tabs[0]:
             )
 
         st.markdown("<br/>", unsafe_allow_html=True)
+
+        # ----- Top-5 trade cards (only when Tastytrade is configured) -----
+        if tt.is_configured():
+            st.markdown(
+                f'<div style="color:{ui.MUTED};font-size:11px;'
+                f'text-transform:uppercase;letter-spacing:0.5px;font-weight:600;'
+                f'margin-bottom:6px;">Top 5 · tap to send to Tastytrade</div>',
+                unsafe_allow_html=True,
+            )
+            top5 = df.head(5)
+            for idx, row in top5.iterrows():
+                t = row["ticker"]
+                score_v = _safe_float(row.get("score"), 0.0)
+                ann = _safe_float(row.get("annualized_yield"), 0.0) * 100
+                leap_k = _safe_float(row.get("leap_strike"), 0.0)
+                short_k = _safe_float(row.get("short_strike"), 0.0)
+                leap_exp = str(row.get("leap_expiry", "") or "")
+                short_exp = str(row.get("short_expiry", "") or "")
+                leap_cost = _safe_float(row.get("leap_cost"), 0.0)
+                short_prem = _safe_float(row.get("short_premium"), 0.0)
+                leap_mid = round(leap_cost / 100, 2) if leap_cost else 0
+                short_mid = round(short_prem / 100, 2) if short_prem else 0
+                net_deb = round(leap_mid - short_mid, 2)
+                src_badge = ""
+                if (row.get("source") or "") == "tastytrade":
+                    src_badge = (
+                        f'<span style="background:{ui.GOOD};color:#000;'
+                        f'padding:1px 6px;border-radius:3px;font-size:9px;'
+                        f'font-weight:700;margin-left:6px;">LIVE</span>'
+                    )
+
+                # Two columns: card info on left, trade button on right
+                cc1, cc2 = st.columns([5, 1.3])
+                with cc1:
+                    st.markdown(
+                        f'<div style="padding:10px 14px;margin:4px 0;'
+                        f'background:rgba(255,255,255,0.04);border-left:3px solid {ui.BLUE};'
+                        f'border-radius:4px;">'
+                        f'<div style="display:flex;justify-content:space-between;'
+                        f'align-items:center;gap:8px;flex-wrap:wrap;">'
+                        f'<div>'
+                        f'<span style="color:{ui.TEXT};font-weight:700;font-size:15px;">{t}</span>'
+                        f'{src_badge}'
+                        f'<span style="color:{ui.MUTED};font-size:11px;margin-left:8px;">'
+                        f'score {score_v:.1f} · ann {ann:.1f}%</span>'
+                        f'</div>'
+                        f'<div style="color:{ui.TEXT};font-size:12px;">'
+                        f'LEAP ${leap_k:.0f}C {leap_exp} @ ${leap_mid:.2f} · '
+                        f'Short ${short_k:.0f}C {short_exp} @ ${short_mid:.2f}'
+                        f'</div></div>'
+                        f'<div style="color:{ui.MUTED};font-size:11px;margin-top:2px;">'
+                        f'Net debit ~${net_deb*100:.0f} per contract</div>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+                with cc2:
+                    btn_disabled = (net_deb <= 0) or (not leap_mid) or (not short_mid)
+                    if st.button(
+                        "Trade", key=f"trade_btn_{t}_{idx}",
+                        disabled=btn_disabled, use_container_width=True,
+                    ):
+                        try:
+                            order, details = tt_orders.build_pmcc_open(
+                                ticker=t,
+                                leap_expiry=leap_exp, leap_strike=leap_k,
+                                leap_mid=leap_mid,
+                                short_expiry=short_exp, short_strike=short_k,
+                                short_mid=short_mid,
+                                qty=1,
+                            )
+                            stash_key = f"pmcc_order_{t}_{idx}"
+                            st.session_state[stash_key] = (order, details)
+                            # Clear any stale preview
+                            st.session_state.pop(f"{stash_key}_preview", None)
+                            _confirm_pmcc_dialog(stash_key)
+                        except Exception as e:
+                            st.error(f"Could not build order: {e}")
+
+            st.markdown("<br/>", unsafe_allow_html=True)
+
         st.markdown(ui.render_table(df, max_rows=50), unsafe_allow_html=True)
 
         # CSV export
