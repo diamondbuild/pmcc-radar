@@ -3,9 +3,9 @@
 Parallel fetch using ThreadPoolExecutor (yfinance is I/O bound).
 Progress callback signature is (done:int, total:int) — do not pass strings.
 
-Optional IBKR refinement: after the fast yfinance scan ranks all tickers, the
-top N rows can be re-fetched through the IBKR proxy for real greeks + live
-prices. IBKR-only full scans aren't practical (rate limits + subscription
+Optional Tastytrade refinement: after the fast yfinance scan ranks all tickers,
+the top N rows can be re-fetched through the Tastytrade API for real greeks +
+live prices. Full Tastytrade-only scans aren't practical (rate limits + streamer
 latency), so hybrid = fast breadth + accurate top picks.
 """
 from __future__ import annotations
@@ -35,9 +35,6 @@ def run_scan(
     use_tastytrade: bool = False,
     refine_top_n: int = 5,
     refine_progress_cb: Optional[Callable[[int, int], None]] = None,
-    # Legacy aliases (IBKR path kept for backwards compat but routes to tastytrade)
-    use_ibkr: bool = False,
-    ibkr_top_n: Optional[int] = None,
 ) -> pd.DataFrame:
     """Run a full PMCC scan. Returns ranked DataFrame.
 
@@ -45,11 +42,6 @@ def run_scan(
     ``refine_top_n`` ranked rows are refined with real greeks + live prices
     from Tastytrade, then the DataFrame is re-scored and re-sorted.
     """
-    # Back-compat: old callers may pass use_ibkr / ibkr_top_n
-    if use_ibkr and not use_tastytrade:
-        use_tastytrade = True
-    if ibkr_top_n is not None:
-        refine_top_n = ibkr_top_n
     tickers = universe.build_universe(force_refresh=force_refresh_universe)
     if limit:
         tickers = tickers[:limit]

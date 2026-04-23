@@ -1,4 +1,4 @@
-"""Tastytrade client — direct API access replacing the IBKR VPS proxy.
+"""Tastytrade client — direct API access for chains, accounts, and positions.
 
 Uses the official `tastytrade` Python SDK (v12.x) with OAuth refresh-token
 flow. Credentials come from env vars / Streamlit secrets:
@@ -20,7 +20,7 @@ Session creation is a single HTTP POST to refresh the access token — cheap.
 Cache spot quotes at module level for a short TTL to avoid re-auth on every
 ticker during a scan refinement.
 
-Public API (mirrors radar.ibkr):
+Public API:
   is_configured()                -> bool
   health()                       -> dict
   get_spot(symbol)               -> dict | None
@@ -299,7 +299,7 @@ def get_chain(symbol: str, expiry: str) -> Optional[dict]:
     """Fetch full chain for one expiry with live greeks + quotes via DXLink.
 
     expiry: YYYYMMDD or YYYY-MM-DD
-    Returns shape matching IBKR proxy:
+    Returns shape:
       {symbol, expiry, spot, calls, puts, source, greeks_hit_rate}
     Each row: {strike, bid, ask, last, iv, delta, gamma, theta, vega, oi, vol}
     """

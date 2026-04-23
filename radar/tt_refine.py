@@ -4,8 +4,7 @@ After the fast yfinance scan ranks all tickers, re-fetch the TOP N through
 Tastytrade (live greeks + bid/ask via DXLink websocket) to replace the
 Black-Scholes approximations with real market data.
 
-Mirrors radar.ibkr_refine's interface. Rows refined are marked
-source="tastytrade" (previously "IBKR").
+Rows refined are marked source="tastytrade".
 """
 from __future__ import annotations
 
