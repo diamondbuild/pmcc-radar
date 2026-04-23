@@ -270,6 +270,84 @@ def get_spot(symbol: str) -> Optional[dict]:
         return None
 
 
+_opt_cache: dict[str, tuple[float, dict]] = {}
+_OPT_TTL = 5.0  # seconds
+
+
+def get_option_quotes(occ_symbols: list[str]) -> dict[str, dict]:
+    """Batch-fetch live option quotes via /market-data/by-type.
+
+    Input: list of OCC symbols as returned by Tastytrade positions
+    (e.g. 'ETHA  260529C00020000' — space-padded to 6 chars at underlying).
+    Returns: {occ_symbol: {bid, ask, last, mark, close}}
+    Missing symbols simply won't be in the output dict.
+    """
+    if not is_configured() or not occ_symbols:
+        return {}
+    now = time.time()
+    out: dict[str, dict] = {}
+    need: list[str] = []
+    for s in occ_symbols:
+        c = _opt_cache.get(s)
+        if c and (now - c[0]) < _OPT_TTL:
+            out[s] = c[1]
+        else:
+            need.append(s)
+    if not need:
+        return out
+    try:
+        import requests
+
+        def factory():
+            async def inner():
+                session = _make_session()
+                await session.refresh(force=True)
+                return session.session_token
+            return inner()
+        token = _call_in_thread(factory, timeout=15)
+        # API accepts repeated equity-option params; chunk to be safe.
+        CHUNK = 25
+        for i in range(0, len(need), CHUNK):
+            batch = need[i:i + CHUNK]
+            params = [("equity-option", s) for s in batch]
+            r = requests.get(
+                "https://api.tastyworks.com/market-data/by-type",
+                params=params,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "User-Agent": USER_AGENT,
+                    "Accept": "application/json",
+                },
+                timeout=20,
+            )
+            r.raise_for_status()
+            items = r.json().get("data", {}).get("items", [])
+            for q in items:
+                sym = q.get("symbol")
+                if not sym:
+                    continue
+                bid = float(q.get("bid") or 0) or None
+                ask = float(q.get("ask") or 0) or None
+                last = float(q.get("last") or 0) or None
+                close = float(q.get("close") or 0) or None
+                mark = float(q.get("mark") or 0) or None
+                if mark is None:
+                    if bid and ask:
+                        mark = (bid + ask) / 2
+                    else:
+                        mark = last or bid or ask or close
+                entry = {
+                    "bid": bid, "ask": ask, "last": last,
+                    "mark": mark, "close": close,
+                }
+                _opt_cache[sym] = (now, entry)
+                out[sym] = entry
+        return out
+    except Exception as e:
+        log.warning(f"get_option_quotes failed: {e}")
+        return out
+
+
 def get_expiries(symbol: str) -> Optional[list[str]]:
     if not is_configured():
         return None

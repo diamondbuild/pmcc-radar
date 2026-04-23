@@ -825,6 +825,17 @@ if tt.is_configured():
                             pass
                     return sym, "", "", ""
 
+                # Fetch live option marks so unrealized P/L reflects current prices
+                # (the positions API often returns stale mark == avg until refreshed).
+                _opt_syms = [
+                    p.get("symbol", "") for p in positions
+                    if "Option" in (p.get("instrument_type", "") or "")
+                ]
+                try:
+                    _live_quotes = tt.get_option_quotes(_opt_syms) if _opt_syms else {}
+                except Exception:
+                    _live_quotes = {}
+
                 # Build per-position row dicts and group by underlying
                 groups: dict[str, list[dict]] = {}
                 for p in positions:
@@ -838,7 +849,14 @@ if tt.is_configured():
                     if direction == "Short":
                         qty_signed = -abs(qty_signed)
                     mult = p.get("multiplier", 100) if is_opt else 1
-                    mkt_price = p.get("mark_price") or p.get("close_price") or 0
+                    # Prefer live mark from /market-data/by-type, then SDK fields
+                    _lq = _live_quotes.get(p.get("symbol", "")) if is_opt else None
+                    mkt_price = (
+                        (_lq or {}).get("mark")
+                        or p.get("mark_price")
+                        or p.get("close_price")
+                        or 0
+                    )
                     mkt_value = mkt_price * qty_signed * mult
                     avg_cost = p.get("average_open_price", 0)
                     if direction == "Short":
