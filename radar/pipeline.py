@@ -2,6 +2,11 @@
 
 Parallel fetch using ThreadPoolExecutor (yfinance is I/O bound).
 Progress callback signature is (done:int, total:int) — do not pass strings.
+
+Optional IBKR refinement: after the fast yfinance scan ranks all tickers, the
+top N rows can be re-fetched through the IBKR proxy for real greeks + live
+prices. IBKR-only full scans aren't practical (rate limits + subscription
+latency), so hybrid = fast breadth + accurate top picks.
 """
 from __future__ import annotations
 
@@ -27,8 +32,16 @@ def run_scan(
     progress_cb: Optional[Callable[[int, int], None]] = None,
     limit: Optional[int] = None,
     force_refresh_universe: bool = False,
+    use_ibkr: bool = False,
+    ibkr_top_n: int = 20,
+    refine_progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> pd.DataFrame:
-    """Run a full PMCC scan. Returns ranked DataFrame."""
+    """Run a full PMCC scan. Returns ranked DataFrame.
+
+    If ``use_ibkr`` is True and the IBKR proxy is configured+healthy, the top
+    ``ibkr_top_n`` ranked rows are refined with real IBKR greeks + live prices,
+    then the DataFrame is re-scored and re-sorted.
+    """
     tickers = universe.build_universe(force_refresh=force_refresh_universe)
     if limit:
         tickers = tickers[:limit]
@@ -60,5 +73,25 @@ def run_scan(
 
     df = pd.DataFrame(rows)
     df = scoring.score_dataframe(df)
+    df["source"] = "yfinance"
     df["scanned_at"] = datetime.now(timezone.utc).isoformat()
-    return df.reset_index(drop=True)
+    df = df.reset_index(drop=True)
+
+    # Optional IBKR refinement of top N rows
+    if use_ibkr:
+        try:
+            from . import ibkr, ibkr_refine
+            if ibkr.is_configured():
+                health = ibkr.health()
+                if health.get("ok") and health.get("gateway_connected"):
+                    df = ibkr_refine.refine_top_n(
+                        df, top_n=ibkr_top_n, progress_cb=refine_progress_cb
+                    )
+        except Exception as e:
+            # Never let IBKR refinement break the scan
+            import logging
+            logging.getLogger("radar.pipeline").warning(
+                f"IBKR refinement skipped due to error: {e}"
+            )
+
+    return df

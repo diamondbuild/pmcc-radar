@@ -219,6 +219,7 @@ if refresh_clicked:
 
 if run_clicked:
     prog = st.progress(0.0, text="Starting scan…")
+    refine_prog = None
     status = st.empty()
     t0 = time.time()
 
@@ -227,6 +228,21 @@ if run_clicked:
         pct = done / max(total, 1)
         prog.progress(pct, text=f"Scanning {done}/{total} tickers…")
 
+    def _refine_cb(done: int, total: int):
+        nonlocal_holder["refine_prog"].progress(
+            done / max(total, 1),
+            text=f"Refining top {total} via IBKR— {done}/{total}…",
+        )
+
+    nonlocal_holder = {"refine_prog": None}
+
+    use_ibkr_flag = bool(st.session_state.get("use_ibkr", False))
+
+    # Show refine bar placeholder before calling pipeline
+    if use_ibkr_flag:
+        refine_prog = st.progress(0.0, text="Awaiting IBKR refinement…")
+        nonlocal_holder["refine_prog"] = refine_prog
+
     try:
         df = pipeline.run_scan(
             budget=float(budget),
@@ -234,12 +250,17 @@ if run_clicked:
             progress_cb=_cb,
             limit=int(limit),
             force_refresh_universe=force_refresh,
+            use_ibkr=use_ibkr_flag,
+            ibkr_top_n=20,
+            refine_progress_cb=_refine_cb if use_ibkr_flag else None,
         )
     except Exception as e:
         st.error(f"Scan failed: {e}")
         df = pd.DataFrame()
 
     prog.empty()
+    if refine_prog is not None:
+        refine_prog.empty()
     status.empty()
     if df.empty:
         st.warning("No PMCC candidates found with current settings.")
@@ -247,9 +268,11 @@ if run_clicked:
         path = history.save_snapshot(df)
         st.session_state["scan_df"] = df
         st.session_state["last_scan_ts"] = datetime.now(timezone.utc).isoformat()
+        refined_count = int((df.get("source") == "IBKR").sum()) if "source" in df.columns else 0
+        refine_note = f" · {refined_count} top picks refined via IBKR" if refined_count else ""
         st.success(
-            f"Scan complete: {len(df)} candidates in {time.time()-t0:.1f}s. "
-            f"Snapshot saved."
+            f"Scan complete: {len(df)} candidates in {time.time()-t0:.1f}s."
+            f"{refine_note} Snapshot saved."
         )
 
 
@@ -349,7 +372,20 @@ with tabs[1]:
         breakeven = _safe_float(_get(row, "breakeven"))
         upside_cap = _safe_float(_get(row, "upside_cap_pct"), 0.0)
 
-        st.markdown(f"### {pick} — ${spot:.2f}")
+        row_source = _get(row, "source", "yfinance") or "yfinance"
+        source_badge = (
+            f'<span style="background:{ui.ACCENT};color:#000;padding:2px 6px;'
+            f'border-radius:4px;font-size:9px;font-weight:700;letter-spacing:0.5px;'
+            f'margin-left:8px;vertical-align:middle;">IBKR</span>'
+            if row_source == "IBKR"
+            else f'<span style="background:{ui.BORDER};color:{ui.MUTED};padding:2px 6px;'
+                 f'border-radius:4px;font-size:9px;font-weight:700;letter-spacing:0.5px;'
+                 f'margin-left:8px;vertical-align:middle;">yfinance</span>'
+        )
+        st.markdown(
+            f'### {pick} — ${spot:.2f} {source_badge}',
+            unsafe_allow_html=True,
+        )
         st.markdown(
             f'<div style="color:{ui.MUTED};font-size:12px;margin-bottom:12px;">'
             f'PMCC Score: <b style="color:{ui.ACCENT}">{score:.1f}</b> / 100'
@@ -517,7 +553,7 @@ gaps can blow up either leg.
 
 st.markdown(
     f'<div style="text-align:center;color:{ui.MUTED};font-size:10px;margin-top:32px;">'
-    f'Not financial advice · Data from yfinance · Delta computed from Black-Scholes'
+    f'Not financial advice · yfinance for breadth · IBKR for live greeks on top picks'
     f'</div>',
     unsafe_allow_html=True,
 )
