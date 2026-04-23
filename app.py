@@ -3,7 +3,7 @@
 Finds the best LEAP + short-call pairs across S&P 500 + liquid ETFs.
 Ranks by annualized yield, upside room, liquidity, IV, and earnings safety.
 
-Version: 2.1 (hybrid yfinance + IBKR refinement)
+Version: 3.0 (hybrid yfinance + Tastytrade refinement)
 """
 from __future__ import annotations
 
@@ -18,7 +18,16 @@ import streamlit as st
 # Make local package importable when run from Streamlit Cloud
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from radar import history, ibkr, pipeline, ui, universe
+from radar import history, pipeline, tastytrade as tt, ui, universe
+
+# Streamlit Cloud injects st.secrets into the environment at startup.
+# Map TT_* secrets to env vars so radar.tastytrade picks them up.
+try:
+    for _k in ("TT_CLIENT_SECRET", "TT_REFRESH_TOKEN", "TT_ACCOUNT_NUMBER"):
+        if _k in st.secrets and _k not in os.environ:
+            os.environ[_k] = st.secrets[_k]
+except Exception:
+    pass
 
 
 def _safe_int(v, default=0):
@@ -192,30 +201,30 @@ budget = st.slider(
 
 
 # -------------------------------------------------------- Data source (on-page)
-ibkr_available = ibkr.is_configured()
-if ibkr_available:
-    _h = ibkr.health()
-    _ib_ok = bool(_h.get("ok") and _h.get("gateway_connected"))
-    _badge = "🟢 live" if _ib_ok else "🔴 offline"
+tt_available = tt.is_configured()
+if tt_available:
+    _h = tt.health()
+    _tt_ok = bool(_h.get("ok"))
+    _badge = "🟢 live" if _tt_ok else "🔴 offline"
     ds_col1, ds_col2 = st.columns([3, 2])
     with ds_col1:
-        use_ibkr = st.toggle(
-            "Use IBKR data (real greeks + portfolio)",
-            value=_ib_ok,
-            disabled=not _ib_ok,
-            help="IBKR provides real greeks from the chain. yfinance uses Black-Scholes approximation.",
-            key="use_ibkr_toggle",
+        use_tt = st.toggle(
+            "Refine top 5 via Tastytrade (real greeks)",
+            value=_tt_ok,
+            disabled=not _tt_ok,
+            help="Tastytrade provides live greeks + bid/ask for the top 5 picks. yfinance uses Black-Scholes approximations.",
+            key="use_tt_toggle",
         )
     with ds_col2:
         st.markdown(
             f'<div style="color:{ui.MUTED};font-size:11px;padding-top:10px;text-align:right;">'
-            f'IBKR proxy: {_badge}'
+            f'Tastytrade: {_badge}'
             f'</div>',
             unsafe_allow_html=True,
         )
 else:
-    use_ibkr = False
-st.session_state["use_ibkr"] = use_ibkr
+    use_tt = False
+st.session_state["use_tt"] = use_tt
 
 
 # ------------------------------------------------------------ Scan / load logic
@@ -236,16 +245,16 @@ if run_clicked:
     def _refine_cb(done: int, total: int):
         nonlocal_holder["refine_prog"].progress(
             done / max(total, 1),
-            text=f"Refining top {total} via IBKR— {done}/{total}…",
+            text=f"Refining top {total} via Tastytrade — {done}/{total}…",
         )
 
     nonlocal_holder = {"refine_prog": None}
 
-    use_ibkr_flag = bool(st.session_state.get("use_ibkr", False))
+    use_tt_flag = bool(st.session_state.get("use_tt", False))
 
     # Show refine bar placeholder before calling pipeline
-    if use_ibkr_flag:
-        refine_prog = st.progress(0.0, text="Awaiting IBKR refinement…")
+    if use_tt_flag:
+        refine_prog = st.progress(0.0, text="Awaiting Tastytrade refinement…")
         nonlocal_holder["refine_prog"] = refine_prog
 
     try:
@@ -255,9 +264,9 @@ if run_clicked:
             progress_cb=_cb,
             limit=int(limit),
             force_refresh_universe=force_refresh,
-            use_ibkr=use_ibkr_flag,
-            ibkr_top_n=5,
-            refine_progress_cb=_refine_cb if use_ibkr_flag else None,
+            use_tastytrade=use_tt_flag,
+            refine_top_n=5,
+            refine_progress_cb=_refine_cb if use_tt_flag else None,
         )
     except Exception as e:
         st.error(f"Scan failed: {e}")
@@ -273,8 +282,8 @@ if run_clicked:
         path = history.save_snapshot(df)
         st.session_state["scan_df"] = df
         st.session_state["last_scan_ts"] = datetime.now(timezone.utc).isoformat()
-        refined_count = int((df.get("source") == "IBKR").sum()) if "source" in df.columns else 0
-        refine_note = f" · {refined_count} top picks refined via IBKR" if refined_count else ""
+        refined_count = int((df.get("source") == "tastytrade").sum()) if "source" in df.columns else 0
+        refine_note = f" · {refined_count} top picks refined via Tastytrade" if refined_count else ""
         st.success(
             f"Scan complete: {len(df)} candidates in {time.time()-t0:.1f}s."
             f"{refine_note} Snapshot saved."
@@ -285,7 +294,7 @@ if run_clicked:
 df = st.session_state.get("scan_df", pd.DataFrame())
 
 tab_labels = ["🏆 Leaderboard", "🔍 Detail", "📜 Legend"]
-if ibkr.is_configured():
+if tt.is_configured():
     tab_labels.insert(2, "💼 Portfolio")
 tabs = st.tabs(tab_labels)
 
@@ -381,8 +390,8 @@ with tabs[1]:
         source_badge = (
             f'<span style="background:{ui.ACCENT};color:#000;padding:2px 6px;'
             f'border-radius:4px;font-size:9px;font-weight:700;letter-spacing:0.5px;'
-            f'margin-left:8px;vertical-align:middle;">IBKR</span>'
-            if row_source == "IBKR"
+            f'margin-left:8px;vertical-align:middle;">LIVE</span>'
+            if row_source == "tastytrade"
             else f'<span style="background:{ui.BORDER};color:{ui.MUTED};padding:2px 6px;'
                  f'border-radius:4px;font-size:9px;font-weight:700;letter-spacing:0.5px;'
                  f'margin-left:8px;vertical-align:middle;">yfinance</span>'
@@ -467,54 +476,83 @@ with tabs[1]:
             language="text",
         )
 
-# Portfolio tab (only present when IBKR is configured)
-if ibkr.is_configured():
+# Portfolio tab (only present when Tastytrade is configured)
+if tt.is_configured():
     with tabs[2]:
-        st.markdown("### 💼 IBKR Paper Portfolio")
-        h = ibkr.health()
-        if not h.get("ok") or not h.get("gateway_connected"):
-            st.error("IBKR proxy is offline. Start the VPS gateway and refresh.")
+        st.markdown("### 💼 Tastytrade Portfolio")
+        h = tt.health()
+        if not h.get("ok"):
+            st.error(f"Tastytrade unavailable: {h.get('error', 'unknown error')}")
         else:
-            acct = ibkr.get_account() or {}
-            positions = ibkr.get_positions() or []
+            acct = tt.get_account() or {}
+            positions = tt.get_positions() or []
 
             # Account summary
             if acct:
                 c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Net Liq", f"${float(acct.get('net_liquidation', 0)):,.0f}")
-                c2.metric("Buying Power", f"${float(acct.get('buying_power', 0)):,.0f}")
-                c3.metric("Cash", f"${float(acct.get('total_cash', 0)):,.0f}")
-                c4.metric("Realized P/L", f"${float(acct.get('realized_pnl', 0)):,.0f}")
+                c1.metric("Net Liq", f"${float(acct.get('NetLiquidation') or 0):,.2f}")
+                c2.metric("Buying Power", f"${float(acct.get('BuyingPower') or 0):,.2f}")
+                c3.metric("Cash", f"${float(acct.get('CashBalance') or 0):,.2f}")
+                c4.metric("Equity BP", f"${float(acct.get('EquityBuyingPower') or 0):,.2f}")
 
             st.markdown("---")
 
             if not positions:
-                st.info("No open positions in the paper account yet.")
+                st.info("No open positions in this account yet.")
             else:
-                # Split equity vs option positions
+                # Parse OCC-style option symbol: 'GME   260529C00028000'
+                # fields: underlying (6 chars padded), YYMMDD, C/P, strike*1000 (8 digits)
+                def _parse_occ(sym: str):
+                    s = sym.strip()
+                    if len(s) >= 21 and (s[-9] in ("C", "P")):
+                        try:
+                            under = s[:-15].strip()
+                            yymmdd = s[-15:-9]
+                            right = s[-9]
+                            strike = int(s[-8:]) / 1000.0
+                            expiry = f"20{yymmdd[0:2]}-{yymmdd[2:4]}-{yymmdd[4:6]}"
+                            return under, expiry, right, strike
+                        except Exception:
+                            pass
+                    return sym, "", "", ""
+
                 rows = []
                 for p in positions:
+                    is_opt = "Option" in (p.get("instrument_type", "") or "")
+                    under, expiry, right, strike = _parse_occ(p.get("symbol", "")) if is_opt else (p.get("symbol", ""), "", "", "")
+                    qty_signed = p.get("quantity", 0)
+                    if p.get("quantity_direction") == "Short":
+                        qty_signed = -abs(qty_signed)
+                    mult = p.get("multiplier", 100) if is_opt else 1
+                    mkt_price = p.get("mark_price") or p.get("close_price") or 0
+                    mkt_value = mkt_price * qty_signed * mult
+                    avg_cost = p.get("average_open_price", 0)
+                    # Unrealized P/L (shorts: entry - mark; longs: mark - entry)
+                    if p.get("quantity_direction") == "Short":
+                        unreal = (avg_cost - mkt_price) * abs(qty_signed) * mult
+                    else:
+                        unreal = (mkt_price - avg_cost) * abs(qty_signed) * mult
                     rows.append({
-                        "Symbol": p.get("symbol", ""),
-                        "Type": p.get("sec_type", ""),
-                        "Expiry": p.get("expiry", "") or "",
-                        "Strike": p.get("strike", "") or "",
-                        "Right": p.get("right", "") or "",
-                        "Qty": p.get("position", 0),
-                        "Avg Cost": p.get("avg_cost", 0),
-                        "Mkt Price": p.get("market_price", 0),
-                        "Mkt Value": p.get("market_value", 0),
-                        "Unrealized P/L": p.get("unrealized_pnl", 0),
+                        "Symbol": under or p.get("symbol", ""),
+                        "Type": "OPT" if is_opt else (p.get("instrument_type", "") or ""),
+                        "Expiry": expiry,
+                        "Strike": strike if strike else "",
+                        "Right": right,
+                        "Qty": qty_signed,
+                        "Avg Cost": f"{avg_cost:.2f}" if avg_cost else "",
+                        "Mkt Price": f"{mkt_price:.2f}" if mkt_price else "",
+                        "Mkt Value": f"{mkt_value:,.2f}",
+                        "Unrealized P/L": f"{unreal:,.2f}",
                     })
                 pos_df = pd.DataFrame(rows)
                 st.dataframe(pos_df, use_container_width=True, hide_index=True)
 
             st.caption(
-                f"Data via IBKR paper account (read-only API). "
-                f"Proxy health: {h.get('server_time', '')}"
+                f"Data via Tastytrade API (OAuth read-only). "
+                f"Account: {h.get('account_number')} · {h.get('nickname')}"
             )
 
-_legend_idx = 3 if ibkr.is_configured() else 2
+_legend_idx = 3 if tt.is_configured() else 2
 with tabs[_legend_idx]:
     st.markdown("### How scoring works")
     st.markdown(
@@ -564,7 +602,7 @@ gaps can blow up either leg.
 
 st.markdown(
     f'<div style="text-align:center;color:{ui.MUTED};font-size:10px;margin-top:32px;">'
-    f'Not financial advice · yfinance for breadth · IBKR for live greeks on top picks'
+    f'Not financial advice · yfinance for breadth · Tastytrade for live greeks on top picks'
     f'</div>',
     unsafe_allow_html=True,
 )

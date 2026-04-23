@@ -8,3 +8,4 @@ data_cache/*.csv
 !data_cache/.gitkeep
 history/*.csv
 !history/.gitkeep
+secrets/

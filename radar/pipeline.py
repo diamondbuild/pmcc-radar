@@ -32,16 +32,24 @@ def run_scan(
     progress_cb: Optional[Callable[[int, int], None]] = None,
     limit: Optional[int] = None,
     force_refresh_universe: bool = False,
-    use_ibkr: bool = False,
-    ibkr_top_n: int = 20,
+    use_tastytrade: bool = False,
+    refine_top_n: int = 5,
     refine_progress_cb: Optional[Callable[[int, int], None]] = None,
+    # Legacy aliases (IBKR path kept for backwards compat but routes to tastytrade)
+    use_ibkr: bool = False,
+    ibkr_top_n: Optional[int] = None,
 ) -> pd.DataFrame:
     """Run a full PMCC scan. Returns ranked DataFrame.
 
-    If ``use_ibkr`` is True and the IBKR proxy is configured+healthy, the top
-    ``ibkr_top_n`` ranked rows are refined with real IBKR greeks + live prices,
-    then the DataFrame is re-scored and re-sorted.
+    If ``use_tastytrade`` is True and credentials are configured, the top
+    ``refine_top_n`` ranked rows are refined with real greeks + live prices
+    from Tastytrade, then the DataFrame is re-scored and re-sorted.
     """
+    # Back-compat: old callers may pass use_ibkr / ibkr_top_n
+    if use_ibkr and not use_tastytrade:
+        use_tastytrade = True
+    if ibkr_top_n is not None:
+        refine_top_n = ibkr_top_n
     tickers = universe.build_universe(force_refresh=force_refresh_universe)
     if limit:
         tickers = tickers[:limit]
@@ -77,21 +85,19 @@ def run_scan(
     df["scanned_at"] = datetime.now(timezone.utc).isoformat()
     df = df.reset_index(drop=True)
 
-    # Optional IBKR refinement of top N rows
-    if use_ibkr:
+    # Optional Tastytrade refinement of top N rows
+    if use_tastytrade:
         try:
-            from . import ibkr, ibkr_refine
-            if ibkr.is_configured():
-                health = ibkr.health()
-                if health.get("ok") and health.get("gateway_connected"):
-                    df = ibkr_refine.refine_top_n(
-                        df, top_n=ibkr_top_n, progress_cb=refine_progress_cb
-                    )
+            from . import tastytrade as tt, tt_refine
+            if tt.is_configured():
+                df = tt_refine.refine_top_n(
+                    df, top_n=refine_top_n, progress_cb=refine_progress_cb
+                )
         except Exception as e:
-            # Never let IBKR refinement break the scan
+            # Never let refinement break the scan
             import logging
             logging.getLogger("radar.pipeline").warning(
-                f"IBKR refinement skipped due to error: {e}"
+                f"Tastytrade refinement skipped due to error: {e}"
             )
 
     return df
