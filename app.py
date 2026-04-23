@@ -18,7 +18,7 @@ import streamlit as st
 # Make local package importable when run from Streamlit Cloud
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from radar import history, pipeline, tastytrade as tt, ui, universe
+from radar import history, pipeline, position_monitor, tastytrade as tt, ui, universe
 
 # Streamlit Cloud injects st.secrets into the environment at startup.
 # Map TT_* secrets to env vars so radar.tastytrade picks them up.
@@ -284,6 +284,15 @@ if run_clicked:
         st.session_state["last_scan_ts"] = datetime.now(timezone.utc).isoformat()
         refined_count = int((df.get("source") == "tastytrade").sum()) if "source" in df.columns else 0
         refine_note = f" · {refined_count} top picks refined via Tastytrade" if refined_count else ""
+        # Evaluate open positions for adjustments (uses Tastytrade only)
+        if use_tt_flag and tt.is_configured():
+            try:
+                open_positions = tt.get_positions() or []
+                alerts = position_monitor.evaluate_positions(open_positions)
+                st.session_state["position_alerts"] = alerts
+            except Exception as e:
+                st.session_state["position_alerts"] = []
+                st.info(f"Position check skipped: {e}")
         st.success(
             f"Scan complete: {len(df)} candidates in {time.time()-t0:.1f}s."
             f"{refine_note} Snapshot saved."
@@ -310,6 +319,32 @@ with tabs[0]:
             except Exception:
                 ts = str(raw)
         st.caption(f"Showing top {min(50, len(df))} of {len(df)} candidates · scanned {ts}")
+
+        # ----- Position Adjustments panel (from position_monitor) -----
+        _alerts = st.session_state.get("position_alerts") or []
+        if _alerts:
+            _sev_color = {"action": ui.DANGER, "warn": ui.WARN, "info": ui.BLUE}
+            _sev_label = {"action": "ACTION", "warn": "WATCH", "info": "INFO"}
+            _action_ct = sum(1 for a in _alerts if a.severity == "action")
+            _head = f"{len(_alerts)} position alert{'s' if len(_alerts) != 1 else ''}"
+            if _action_ct:
+                _head += f" · {_action_ct} need attention"
+            with st.expander(f"🔔 {_head}", expanded=bool(_action_ct)):
+                for a in _alerts:
+                    color = _sev_color.get(a.severity, ui.MUTED)
+                    badge = _sev_label.get(a.severity, a.severity.upper())
+                    st.markdown(
+                        f'<div style="border-left:3px solid {color};padding:8px 12px;'
+                        f'margin:6px 0;background:rgba(255,255,255,0.02);border-radius:4px;">'
+                        f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">'
+                        f'<span style="background:{color};color:#000;padding:2px 6px;'
+                        f'border-radius:3px;font-size:10px;font-weight:700;">{badge}</span>'
+                        f'<span style="color:{ui.TEXT};font-weight:600;font-size:13px;">{a.title}</span>'
+                        f'</div>'
+                        f'<div style="color:{ui.MUTED};font-size:12px;line-height:1.5;">{a.detail}</div>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
 
         # Summary strip
         c1, c2, c3, c4 = st.columns(4)
@@ -501,7 +536,6 @@ if tt.is_configured():
                 st.info("No open positions in this account yet.")
             else:
                 # Parse OCC-style option symbol: 'GME   260529C00028000'
-                # fields: underlying (6 chars padded), YYMMDD, C/P, strike*1000 (8 digits)
                 def _parse_occ(sym: str):
                     s = sym.strip()
                     if len(s) >= 21 and (s[-9] in ("C", "P")):
@@ -516,36 +550,196 @@ if tt.is_configured():
                             pass
                     return sym, "", "", ""
 
-                rows = []
+                # Build per-position row dicts and group by underlying
+                groups: dict[str, list[dict]] = {}
                 for p in positions:
                     is_opt = "Option" in (p.get("instrument_type", "") or "")
-                    under, expiry, right, strike = _parse_occ(p.get("symbol", "")) if is_opt else (p.get("symbol", ""), "", "", "")
+                    under, expiry, right, strike = (
+                        _parse_occ(p.get("symbol", "")) if is_opt
+                        else (p.get("symbol", ""), "", "", "")
+                    )
                     qty_signed = p.get("quantity", 0)
-                    if p.get("quantity_direction") == "Short":
+                    direction = p.get("quantity_direction")
+                    if direction == "Short":
                         qty_signed = -abs(qty_signed)
                     mult = p.get("multiplier", 100) if is_opt else 1
                     mkt_price = p.get("mark_price") or p.get("close_price") or 0
                     mkt_value = mkt_price * qty_signed * mult
                     avg_cost = p.get("average_open_price", 0)
-                    # Unrealized P/L (shorts: entry - mark; longs: mark - entry)
-                    if p.get("quantity_direction") == "Short":
+                    if direction == "Short":
                         unreal = (avg_cost - mkt_price) * abs(qty_signed) * mult
                     else:
                         unreal = (mkt_price - avg_cost) * abs(qty_signed) * mult
-                    rows.append({
-                        "Symbol": under or p.get("symbol", ""),
-                        "Type": "OPT" if is_opt else (p.get("instrument_type", "") or ""),
-                        "Expiry": expiry,
-                        "Strike": strike if strike else "",
-                        "Right": right,
-                        "Qty": qty_signed,
-                        "Avg Cost": f"{avg_cost:.2f}" if avg_cost else "",
-                        "Mkt Price": f"{mkt_price:.2f}" if mkt_price else "",
-                        "Mkt Value": f"{mkt_value:,.2f}",
-                        "Unrealized P/L": f"{unreal:,.2f}",
-                    })
-                pos_df = pd.DataFrame(rows)
-                st.dataframe(pos_df, use_container_width=True, hide_index=True)
+                    row = {
+                        "is_opt": is_opt,
+                        "direction": direction or "",
+                        "right": right,
+                        "expiry": expiry,
+                        "strike": strike if strike else None,
+                        "qty": qty_signed,
+                        "avg_cost": avg_cost or 0,
+                        "mkt_price": mkt_price or 0,
+                        "mkt_value": mkt_value or 0,
+                        "unreal": unreal or 0,
+                        "mult": mult,
+                    }
+                    groups.setdefault(under or p.get("symbol", ""), []).append(row)
+
+                # Portfolio totals
+                total_mv = sum(r["mkt_value"] for g in groups.values() for r in g)
+                total_unreal = sum(r["unreal"] for g in groups.values() for r in g)
+                mc1, mc2, mc3 = st.columns(3)
+                mc1.metric("Positions", f"{len(positions)}")
+                mc2.metric("Net Market Value", f"${total_mv:,.2f}")
+                pl_color = ui.GOOD if total_unreal >= 0 else ui.DANGER
+                mc3.markdown(
+                    f'<div style="padding:4px 0;">'
+                    f'<div style="color:{ui.MUTED};font-size:12px;">Unrealized P/L</div>'
+                    f'<div style="color:{pl_color};font-size:22px;font-weight:700;">'
+                    f'${total_unreal:,.2f}</div></div>',
+                    unsafe_allow_html=True,
+                )
+                st.markdown("")
+
+                # One card per underlying with alternating row shading inside.
+                # Sort groups so largest net MV first.
+                sorted_groups = sorted(
+                    groups.items(),
+                    key=lambda kv: -sum(abs(r["mkt_value"]) for r in kv[1]),
+                )
+                shade_a = "rgba(255,255,255,0.03)"
+                shade_b = "rgba(255,255,255,0.07)"
+                for under, rows in sorted_groups:
+                    # PMCC detection: one long call + one short call on same underlying
+                    longs = [r for r in rows if r["is_opt"] and r["right"] == "C" and r["direction"] == "Long"]
+                    shorts = [r for r in rows if r["is_opt"] and r["right"] == "C" and r["direction"] == "Short"]
+                    is_pmcc = len(longs) >= 1 and len(shorts) >= 1
+                    group_tag = "PMCC" if is_pmcc else "POS"
+                    tag_color = ui.BLUE if is_pmcc else ui.MUTED
+                    group_mv = sum(r["mkt_value"] for r in rows)
+                    group_pl = sum(r["unreal"] for r in rows)
+                    pl_c = ui.GOOD if group_pl >= 0 else ui.DANGER
+
+                    # Sort rows inside group: longs first, then shorts, then stock; by expiry
+                    def _rkey(r):
+                        # 0 long call, 1 short call, 2 stock/other
+                        if r["is_opt"] and r["right"] == "C" and r["direction"] == "Long":
+                            o = 0
+                        elif r["is_opt"] and r["right"] == "C" and r["direction"] == "Short":
+                            o = 1
+                        else:
+                            o = 2
+                        return (o, r["expiry"] or "")
+                    rows_sorted = sorted(rows, key=_rkey)
+
+                    # Group header card
+                    st.markdown(
+                        f'<div style="margin-top:14px;padding:10px 14px;'
+                        f'background:rgba(96,165,250,0.08);border-left:3px solid {tag_color};'
+                        f'border-radius:6px 6px 0 0;display:flex;align-items:center;'
+                        f'justify-content:space-between;flex-wrap:wrap;gap:8px;">'
+                        f'<div style="display:flex;align-items:center;gap:10px;">'
+                        f'<span style="color:{ui.TEXT};font-weight:700;font-size:16px;">{under}</span>'
+                        f'<span style="background:{tag_color};color:#000;padding:2px 7px;'
+                        f'border-radius:3px;font-size:10px;font-weight:700;letter-spacing:0.5px;">'
+                        f'{group_tag}</span>'
+                        f'<span style="color:{ui.MUTED};font-size:11px;">'
+                        f'{len(rows)} leg{"s" if len(rows) != 1 else ""}</span>'
+                        f'</div>'
+                        f'<div style="display:flex;gap:16px;align-items:center;">'
+                        f'<span style="color:{ui.MUTED};font-size:11px;">MV</span>'
+                        f'<span style="color:{ui.TEXT};font-size:13px;font-weight:600;">'
+                        f'${group_mv:,.0f}</span>'
+                        f'<span style="color:{ui.MUTED};font-size:11px;">P/L</span>'
+                        f'<span style="color:{pl_c};font-size:13px;font-weight:700;">'
+                        f'${group_pl:,.0f}</span>'
+                        f'</div></div>',
+                        unsafe_allow_html=True,
+                    )
+
+                    # Column header row
+                    st.markdown(
+                        f'<div style="display:grid;grid-template-columns:'
+                        f'0.9fr 1.1fr 0.8fr 0.5fr 0.9fr 0.9fr 1fr 1fr;gap:6px;'
+                        f'padding:6px 12px;background:rgba(255,255,255,0.04);'
+                        f'color:{ui.MUTED};font-size:10px;text-transform:uppercase;'
+                        f'letter-spacing:0.5px;font-weight:600;">'
+                        f'<div>Leg</div><div>Expiry</div><div>Strike</div>'
+                        f'<div>Qty</div><div>Avg</div><div>Mark</div>'
+                        f'<div>Mkt Value</div><div>Unreal P/L</div>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                    # Data rows with alternating shading
+                    for i, r in enumerate(rows_sorted):
+                        bg = shade_b if i % 2 else shade_a
+                        if r["is_opt"]:
+                            if r["direction"] == "Long":
+                                leg_label = "Long Call"
+                                leg_color = ui.BLUE
+                            elif r["direction"] == "Short":
+                                leg_label = "Short Call"
+                                leg_color = ui.WARN
+                            else:
+                                leg_label = r["right"] or "OPT"
+                                leg_color = ui.TEXT
+                        else:
+                            leg_label = "Stock"
+                            leg_color = ui.TEXT
+                        strike_s = f"${r['strike']:.2f}" if r["strike"] else "—"
+                        avg_s = f"${r['avg_cost']:.2f}" if r["avg_cost"] else "—"
+                        mark_s = f"${r['mkt_price']:.2f}" if r["mkt_price"] else "—"
+                        pl_rc = ui.GOOD if r["unreal"] >= 0 else ui.DANGER
+                        is_last = i == len(rows_sorted) - 1
+                        radius = "0 0 6px 6px" if is_last else "0"
+                        st.markdown(
+                            f'<div style="display:grid;grid-template-columns:'
+                            f'0.9fr 1.1fr 0.8fr 0.5fr 0.9fr 0.9fr 1fr 1fr;gap:6px;'
+                            f'padding:8px 12px;background:{bg};color:{ui.TEXT};'
+                            f'font-size:12px;border-radius:{radius};align-items:center;">'
+                            f'<div style="color:{leg_color};font-weight:600;">{leg_label}</div>'
+                            f'<div style="color:{ui.MUTED};">{r["expiry"] or "—"}</div>'
+                            f'<div>{strike_s}</div>'
+                            f'<div>{r["qty"]}</div>'
+                            f'<div>{avg_s}</div>'
+                            f'<div>{mark_s}</div>'
+                            f'<div>${r["mkt_value"]:,.0f}</div>'
+                            f'<div style="color:{pl_rc};font-weight:600;">'
+                            f'${r["unreal"]:,.0f}</div>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+
+                # Show any alerts specific to these positions
+                _portfolio_alerts = st.session_state.get("position_alerts") or []
+                if _portfolio_alerts:
+                    st.markdown("&nbsp;", unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div style="color:{ui.MUTED};font-size:11px;'
+                        f'text-transform:uppercase;letter-spacing:0.5px;'
+                        f'font-weight:600;margin-top:8px;">Adjustment alerts</div>',
+                        unsafe_allow_html=True,
+                    )
+                    _sev_color = {"action": ui.DANGER, "warn": ui.WARN, "info": ui.BLUE}
+                    for a in _portfolio_alerts:
+                        color = _sev_color.get(a.severity, ui.MUTED)
+                        st.markdown(
+                            f'<div style="border-left:3px solid {color};padding:6px 10px;'
+                            f'margin:4px 0;background:rgba(255,255,255,0.02);border-radius:3px;'
+                            f'font-size:12px;">'
+                            f'<span style="color:{ui.TEXT};font-weight:600;">{a.title}</span>'
+                            f'<div style="color:{ui.MUTED};font-size:11px;margin-top:2px;">'
+                            f'{a.detail}</div>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+                else:
+                    st.markdown(
+                        f'<div style="color:{ui.MUTED};font-size:11px;margin-top:12px;">'
+                        f'Run a scan to check for adjustment recommendations.</div>',
+                        unsafe_allow_html=True,
+                    )
 
             st.caption(
                 f"Data via Tastytrade API (OAuth read-only). "
