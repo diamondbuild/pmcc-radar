@@ -16,7 +16,7 @@ import streamlit as st
 # Make local package importable when run from Streamlit Cloud
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from radar import history, pipeline, ui, universe
+from radar import history, ibkr, pipeline, ui, universe
 
 
 def _safe_int(v, default=0):
@@ -172,6 +172,25 @@ with st.sidebar:
         st.caption(f"{mins}m old" if mins < 60 else f"{mins//60}h {mins%60}m old")
     force_refresh = st.checkbox("Force refresh universe on next scan", value=False)
 
+    st.markdown("---")
+    st.markdown("### Data source")
+    ibkr_available = ibkr.is_configured()
+    if ibkr_available:
+        h = ibkr.health()
+        ib_ok = h.get("ok") and h.get("gateway_connected")
+        badge = "🟢 live" if ib_ok else "🔴 offline"
+        st.caption(f"IBKR proxy: {badge}")
+        use_ibkr = st.toggle(
+            "Use IBKR (greeks + real-time)",
+            value=ib_ok,
+            disabled=not ib_ok,
+            help="IBKR provides real greeks from the chain. yfinance uses Black-Scholes approximation.",
+        )
+    else:
+        st.caption("IBKR proxy: not configured")
+        use_ibkr = False
+    st.session_state["use_ibkr"] = use_ibkr
+
 
 # ------------------------------------------------------------ Scan / load logic
 col_a, col_b = st.columns([1, 1])
@@ -229,7 +248,10 @@ if run_clicked:
 # ------------------------------------------------------------------- Main table
 df = st.session_state.get("scan_df", pd.DataFrame())
 
-tabs = st.tabs(["🏆 Leaderboard", "🔍 Detail", "📜 Legend"])
+tab_labels = ["🏆 Leaderboard", "🔍 Detail", "📜 Legend"]
+if ibkr.is_configured():
+    tab_labels.insert(2, "💼 Portfolio")
+tabs = st.tabs(tab_labels)
 
 with tabs[0]:
     if df.empty:
@@ -390,7 +412,55 @@ with tabs[1]:
             language="text",
         )
 
-with tabs[2]:
+# Portfolio tab (only present when IBKR is configured)
+if ibkr.is_configured():
+    with tabs[2]:
+        st.markdown("### 💼 IBKR Paper Portfolio")
+        h = ibkr.health()
+        if not h.get("ok") or not h.get("gateway_connected"):
+            st.error("IBKR proxy is offline. Start the VPS gateway and refresh.")
+        else:
+            acct = ibkr.get_account() or {}
+            positions = ibkr.get_positions() or []
+
+            # Account summary
+            if acct:
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Net Liq", f"${float(acct.get('net_liquidation', 0)):,.0f}")
+                c2.metric("Buying Power", f"${float(acct.get('buying_power', 0)):,.0f}")
+                c3.metric("Cash", f"${float(acct.get('total_cash', 0)):,.0f}")
+                c4.metric("Realized P/L", f"${float(acct.get('realized_pnl', 0)):,.0f}")
+
+            st.markdown("---")
+
+            if not positions:
+                st.info("No open positions in the paper account yet.")
+            else:
+                # Split equity vs option positions
+                rows = []
+                for p in positions:
+                    rows.append({
+                        "Symbol": p.get("symbol", ""),
+                        "Type": p.get("sec_type", ""),
+                        "Expiry": p.get("expiry", "") or "",
+                        "Strike": p.get("strike", "") or "",
+                        "Right": p.get("right", "") or "",
+                        "Qty": p.get("position", 0),
+                        "Avg Cost": p.get("avg_cost", 0),
+                        "Mkt Price": p.get("market_price", 0),
+                        "Mkt Value": p.get("market_value", 0),
+                        "Unrealized P/L": p.get("unrealized_pnl", 0),
+                    })
+                pos_df = pd.DataFrame(rows)
+                st.dataframe(pos_df, use_container_width=True, hide_index=True)
+
+            st.caption(
+                f"Data via IBKR paper account (read-only API). "
+                f"Proxy health: {h.get('server_time', '')}"
+            )
+
+_legend_idx = 3 if ibkr.is_configured() else 2
+with tabs[_legend_idx]:
     st.markdown("### How scoring works")
     st.markdown(
         f"""
