@@ -2,6 +2,8 @@
 
 Finds the best LEAP + short-call pairs across S&P 500 + liquid ETFs.
 Ranks by annualized yield, upside room, liquidity, IV, and earnings safety.
+
+Version: 2.1 (hybrid yfinance + IBKR refinement)
 """
 from __future__ import annotations
 
