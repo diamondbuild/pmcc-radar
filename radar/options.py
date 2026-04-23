@@ -348,11 +348,13 @@ def analyze_ticker(
         # Net debit must be positive (you're paying to open a PMCC)
         if net_debit <= 0:
             return None
-        # Max profit: (short_strike - leap_strike) * 100 - net_debit
+        # Max profit if both legs run to expiry:
+        # (short_strike - leap_strike) * 100 - net_debit
+        # NOTE: PMCCs are INCOME-focused trades (roll shorts repeatedly, collect
+        # premium over time). Negative max_profit doesn't disqualify the trade
+        # — it just means you need the stock to appreciate modestly OR the short
+        # to get rolled enough times to recoup. We allow these but flag them.
         max_profit = (float(short["strike"]) - float(leap["strike"])) * 100.0 - net_debit
-        # Max profit must be positive — otherwise the trade is structurally unprofitable
-        if max_profit <= 0:
-            return None
         max_loss = net_debit  # if LEAP goes to zero
         breakeven = float(leap["strike"]) + (net_debit / 100.0)
         static_yield = short_prem / net_debit if net_debit > 0 else 0.0
@@ -366,6 +368,17 @@ def analyze_ticker(
         # Annualized yield over 200% is almost certainly a data artifact, not an opportunity.
         if annualized > 2.0:
             return None
+        # Short premium must be meaningful — at least $20 per contract, and at
+        # least 0.3% of net debit. Otherwise the income thesis collapses.
+        if short_prem < 20.0:
+            return None
+        if static_yield < 0.003:
+            return None
+        # Flag negative max_profit as a warning but keep the candidate
+        if max_profit <= 0:
+            warnings_list.append(
+                f"Structural loss at short expiry: ${max_profit:.0f} (income-only trade)"
+            )
 
         # Earnings flag — if earnings falls before short expiry, it's a red flag
         earn = _earnings_date(tk)

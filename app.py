@@ -142,8 +142,8 @@ st.markdown(
 )
 st.markdown(
     '<div class="subtitle">'
-    "Ranks the best LEAP + short-call pairs across S&P 500 and liquid ETFs. "
-    "Income-focused: deep ITM LEAPs (~0.85 delta) + ~30-day short calls (~0.25 delta)."
+    "Ranks the best LEAP + short-call pairs across S&P 500, Russell 1000, Nasdaq 100, "
+    "and liquid ETFs. Income-focused: deep ITM LEAPs (~0.85 delta) + ~30-day short calls (~0.25 delta)."
     "</div>",
     unsafe_allow_html=True,
 )
@@ -151,14 +151,10 @@ st.markdown(
 
 # ---------------------------------------------------------------------- Sidebar
 with st.sidebar:
-    st.markdown("### Settings")
-    budget = st.number_input(
-        "Max LEAP cost ($)", min_value=200, max_value=20000, value=3500, step=100,
-        help="Filters out LEAPs that cost more than this."
-    )
+    st.markdown("### Advanced")
     limit = st.number_input(
-        "Universe limit", min_value=20, max_value=600, value=550, step=10,
-        help="Max tickers to scan. Lower = faster. Full universe ≈ 540."
+        "Universe limit", min_value=20, max_value=1500, value=1100, step=10,
+        help="Max tickers to scan. Lower = faster. Full universe ≈ 1,050."
     )
     max_workers = st.slider(
         "Parallel workers", 4, 24, 12,
@@ -172,7 +168,27 @@ with st.sidebar:
     else:
         mins = int(age // 60)
         st.caption(f"{mins}m old" if mins < 60 else f"{mins//60}h {mins%60}m old")
+    stats = universe.cache_stats()
+    if stats:
+        st.caption(
+            f"S&P 500: {stats.get('sp500_count', 0)} · "
+            f"Nasdaq 100: {stats.get('nasdaq100_count', 0)} · "
+            f"Russell 1000: {stats.get('russell1000_count', 0)} · "
+            f"ETFs: {stats.get('etf_count', 0)} · "
+            f"Extras: {stats.get('extras_count', 0)}"
+        )
     force_refresh = st.checkbox("Force refresh universe on next scan", value=False)
+
+
+# ---------------------------------------------------------- Budget (on-page)
+budget = st.slider(
+    "Max LEAP cost per contract",
+    min_value=500, max_value=50000, value=15000, step=500,
+    format="$%d",
+    help="Filters out LEAPs above this cost. "
+    "Raise to cover big names (SPY ~$13k, AAPL ~$12k, NVDA ~$8k). "
+    "Lower for small-account scans.",
+)
 
 
 # -------------------------------------------------------- Data source (on-page)

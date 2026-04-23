@@ -107,6 +107,16 @@ def score_row(row: dict) -> float:
     warnings = row.get("warnings", "") or ""
     if "Wide" in warnings or "Thin" in warnings:
         composite -= 3
+    # Penalize structurally-unprofitable-at-expiry trades: they need rolls to work
+    max_profit = row.get("max_profit", 0)
+    net_debit = row.get("net_debit", 0)
+    if max_profit is not None and max_profit < 0:
+        # Scale penalty by how deeply negative vs net debit
+        if net_debit and net_debit > 0:
+            ratio = abs(max_profit) / net_debit
+            composite -= min(15, ratio * 20)
+        else:
+            composite -= 10
 
     # Hard floor for non-viable: annualized yield < 5% is disqualified
     if row.get("annualized_yield", 0) < 0.05:
