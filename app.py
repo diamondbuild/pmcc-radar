@@ -172,24 +172,32 @@ with st.sidebar:
         st.caption(f"{mins}m old" if mins < 60 else f"{mins//60}h {mins%60}m old")
     force_refresh = st.checkbox("Force refresh universe on next scan", value=False)
 
-    st.markdown("---")
-    st.markdown("### Data source")
-    ibkr_available = ibkr.is_configured()
-    if ibkr_available:
-        h = ibkr.health()
-        ib_ok = h.get("ok") and h.get("gateway_connected")
-        badge = "🟢 live" if ib_ok else "🔴 offline"
-        st.caption(f"IBKR proxy: {badge}")
+
+# -------------------------------------------------------- Data source (on-page)
+ibkr_available = ibkr.is_configured()
+if ibkr_available:
+    _h = ibkr.health()
+    _ib_ok = bool(_h.get("ok") and _h.get("gateway_connected"))
+    _badge = "🟢 live" if _ib_ok else "🔴 offline"
+    ds_col1, ds_col2 = st.columns([3, 2])
+    with ds_col1:
         use_ibkr = st.toggle(
-            "Use IBKR (greeks + real-time)",
-            value=ib_ok,
-            disabled=not ib_ok,
+            "Use IBKR data (real greeks + portfolio)",
+            value=_ib_ok,
+            disabled=not _ib_ok,
             help="IBKR provides real greeks from the chain. yfinance uses Black-Scholes approximation.",
+            key="use_ibkr_toggle",
         )
-    else:
-        st.caption("IBKR proxy: not configured")
-        use_ibkr = False
-    st.session_state["use_ibkr"] = use_ibkr
+    with ds_col2:
+        st.markdown(
+            f'<div style="color:{ui.MUTED};font-size:11px;padding-top:10px;text-align:right;">'
+            f'IBKR proxy: {_badge}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+else:
+    use_ibkr = False
+st.session_state["use_ibkr"] = use_ibkr
 
 
 # ------------------------------------------------------------ Scan / load logic
