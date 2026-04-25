@@ -473,6 +473,26 @@ if run_clicked:
     status.empty()
     if df.empty:
         st.warning("No PMCC candidates found with current settings.")
+        diag = getattr(df, "attrs", {}).get("joey_diagnostics")
+        if diag:
+            checked = diag.get("checked", 0)
+            passed = diag.get("passed_quality", 0)
+            reasons = diag.get("reasons", {})
+            lines = [
+                f"**Joey's method diagnostics** — {passed} of {checked} "
+                f"whitelist tickers passed quality gates."
+            ]
+            if reasons:
+                lines.append("\n**Why others were rejected:**")
+                for k, v in sorted(reasons.items(), key=lambda x: -x[1]):
+                    lines.append(f"- {k}: {v}")
+            if passed > 0:
+                lines.append(
+                    "\nThe survivors didn't yield a viable LEAP+short pair "
+                    "within budget at the required ≥1.5%/mo yield with "
+                    "strike above breakeven. Try raising the budget."
+                )
+            st.info("\n".join(lines))
     else:
         path = history.save_snapshot(df)
         st.session_state["scan_df"] = df

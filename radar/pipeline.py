@@ -123,6 +123,35 @@ def run_scan(
                     pass
 
     if not rows:
+        # If Joey's method was on, attach a diagnostic frame so the UI
+        # can explain why nothing surfaced.
+        if joey_method and quality_results:
+            from collections import Counter
+            reasons: Counter = Counter()
+            for qr in quality_results.values():
+                for r in (qr.reasons or []):
+                    # Bucket reasons into short labels
+                    if "price" in r:
+                        reasons["price < $40"] += 1
+                    elif "avg vol" in r:
+                        reasons["avg vol < 5M"] += 1
+                    elif "200DMA" in r:
+                        reasons["below 200DMA"] += 1
+                    elif "earnings" in r:
+                        reasons["earnings within 14d"] += 1
+                    elif "weeklies" in r or "option expiries" in r:
+                        reasons["no weeklies"] += 1
+                    else:
+                        reasons["other"] += 1
+            empty = pd.DataFrame()
+            empty.attrs["joey_diagnostics"] = {
+                "checked": len(quality_results),
+                "passed_quality": sum(
+                    1 for qr in quality_results.values() if qr.passed
+                ),
+                "reasons": dict(reasons),
+            }
+            return empty
         return pd.DataFrame()
 
     df = pd.DataFrame(rows)
