@@ -226,14 +226,21 @@ def _select_short(
     leap_strike: float,
     target_delta_min: float = 0.20,
     target_delta_max: float = 0.32,
+    min_strike: Optional[float] = None,
 ) -> Optional[pd.Series]:
-    """Pick the best short call: 20-30 delta, OTM, above LEAP strike."""
+    """Pick the best short call: 20-30 delta, OTM, above LEAP strike.
+
+    If ``min_strike`` is provided, also require strike > min_strike. Used to
+    enforce "short strike above LEAP breakeven" in Joey's method.
+    """
     if chain is None or chain.empty:
         return None
     df = chain[chain["mid"] > 0].copy()
     # Must be OTM and above the LEAP strike (so max loss is bounded)
     df = df[df["strike"] > spot]
     df = df[df["strike"] > leap_strike]
+    if min_strike is not None:
+        df = df[df["strike"] > min_strike]
     if df.empty:
         return None
     # Reject rows with unusable IV
@@ -307,8 +314,15 @@ def _pick_short_expiry(expirations: list[str], dte_min: int = 25, dte_max: int =
 def analyze_ticker(
     ticker: str,
     budget: float = 3500.0,
+    joey_method: bool = False,
 ) -> Optional[PMCCResult]:
-    """Full PMCC analysis for one ticker. None if no viable pair."""
+    """Full PMCC analysis for one ticker. None if no viable pair.
+
+    If ``joey_method`` is True, applies tighter selection rules:
+      - LEAP delta band 0.70-0.85 (instead of 0.80-0.92)
+      - Short call strike must be > LEAP breakeven (capture real upside)
+      - Annualized yield floor raised to 18% (~1.5%/mo of LEAP cost)
+    """
     warnings_list: list[str] = []
     try:
         tk = yf.Ticker(ticker)
@@ -333,7 +347,13 @@ def analyze_ticker(
         if leap_chain is None or short_chain is None:
             return None
 
-        leap = _select_leap(leap_chain, spot, budget)
+        if joey_method:
+            leap = _select_leap(
+                leap_chain, spot, budget,
+                target_delta_min=0.70, target_delta_max=0.85,
+            )
+        else:
+            leap = _select_leap(leap_chain, spot, budget)
         if leap is None:
             return None
 
@@ -376,6 +396,34 @@ def analyze_ticker(
             return None
         if static_yield < 0.003:
             return None
+        # Joey's method extras: short > breakeven and stronger yield floor
+        if joey_method:
+            # Re-pick short with breakeven floor if the picked strike sits
+            # at or below it. (Default selection optimizes for premium
+            # which can land just under breakeven on tight chains.)
+            if float(short["strike"]) <= breakeven:
+                short = _select_short(
+                    short_chain, spot, float(leap["strike"]),
+                    min_strike=breakeven,
+                )
+                if short is None:
+                    return None
+                short_prem = float(short["mid"]) * 100.0
+                net_debit = leap_cost - short_prem
+                if net_debit <= 0:
+                    return None
+                max_profit = (
+                    float(short["strike"]) - float(leap["strike"])
+                ) * 100.0 - net_debit
+                breakeven = float(leap["strike"]) + (net_debit / 100.0)
+                static_yield = short_prem / net_debit if net_debit > 0 else 0.0
+                short_dte = int(short["dte"]) or 30
+                annualized = static_yield * (365.0 / short_dte)
+                upside_cap = (float(short["strike"]) - spot) / spot
+                if upside_cap < 0.01 or short_prem < 20.0:
+                    return None
+            if annualized < 0.18:
+                return None
         # Flag negative max_profit as a warning but keep the candidate
         if max_profit <= 0:
             warnings_list.append(

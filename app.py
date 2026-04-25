@@ -387,6 +387,23 @@ else:
     use_tt = False
 st.session_state["use_tt"] = use_tt
 
+# Joey's PMCC Method preset: liquid mega-cap whitelist + hard quality gates
+# (price >= $40, avg vol >= 5M, above 200DMA, weeklies, no earnings in 14d)
+# plus tighter LEAP delta (0.70-0.85), short > breakeven, yield floor 18% ann.
+use_joey = st.toggle(
+    "Joey's PMCC Method (quality filters)",
+    value=st.session_state.get("use_joey", False),
+    help=(
+        "Restricts the scan to a curated liquid mega-cap + ETF whitelist and "
+        "applies hard PMCC quality gates: $40+ price, 5M+ avg volume, above "
+        "200-day MA, weekly options, no earnings within 14 days. Tightens "
+        "LEAP delta to 0.70-0.85, requires short strike above LEAP breakeven, "
+        "and a 1.5%/mo (~18% annualized) yield floor."
+    ),
+    key="use_joey_toggle",
+)
+st.session_state["use_joey"] = use_joey
+
 
 # ------------------------------------------------------------ Scan / load logic
 run_clicked = st.button("▶ Run scan", type="primary", use_container_width=True)
@@ -412,11 +429,24 @@ if run_clicked:
     nonlocal_holder = {"refine_prog": None}
 
     use_tt_flag = bool(st.session_state.get("use_tt", False))
+    use_joey_flag = bool(st.session_state.get("use_joey", False))
 
     # Show refine bar placeholder before calling pipeline
     if use_tt_flag:
         refine_prog = st.progress(0.0, text="Awaiting Tastytrade refinement…")
         nonlocal_holder["refine_prog"] = refine_prog
+
+    # Quality-gate progress bar (Joey's method only)
+    quality_prog = None
+    if use_joey_flag:
+        quality_prog = st.progress(0.0, text="Quality-checking whitelist…")
+
+    def _quality_cb(done: int, total: int):
+        if quality_prog is not None:
+            quality_prog.progress(
+                done / max(total, 1),
+                text=f"Quality-checking {done}/{total}…",
+            )
 
     try:
         df = pipeline.run_scan(
@@ -428,6 +458,8 @@ if run_clicked:
             use_tastytrade=use_tt_flag,
             refine_top_n=5,
             refine_progress_cb=_refine_cb if use_tt_flag else None,
+            joey_method=use_joey_flag,
+            quality_progress_cb=_quality_cb if use_joey_flag else None,
         )
     except Exception as e:
         st.error(f"Scan failed: {e}")
@@ -436,6 +468,8 @@ if run_clicked:
     prog.empty()
     if refine_prog is not None:
         refine_prog.empty()
+    if quality_prog is not None:
+        quality_prog.empty()
     status.empty()
     if df.empty:
         st.warning("No PMCC candidates found with current settings.")

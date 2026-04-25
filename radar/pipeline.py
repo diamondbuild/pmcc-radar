@@ -17,13 +17,23 @@ from typing import Callable, Optional
 import pandas as pd
 
 from . import options, scoring, universe
+from .quality_filter import JOEY_WHITELIST, check_quality
 
 
-def _safe_analyze(ticker: str, budget: float):
+def _safe_analyze(ticker: str, budget: float, joey_method: bool = False):
     try:
-        return options.analyze_ticker(ticker, budget=budget)
+        return options.analyze_ticker(
+            ticker, budget=budget, joey_method=joey_method
+        )
     except Exception:
         return None
+
+
+def _safe_quality_check(ticker: str):
+    try:
+        return ticker, check_quality(ticker)
+    except Exception:
+        return ticker, None
 
 
 def run_scan(
@@ -35,16 +45,57 @@ def run_scan(
     use_tastytrade: bool = False,
     refine_top_n: int = 5,
     refine_progress_cb: Optional[Callable[[int, int], None]] = None,
+    joey_method: bool = False,
+    quality_progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> pd.DataFrame:
     """Run a full PMCC scan. Returns ranked DataFrame.
 
     If ``use_tastytrade`` is True and credentials are configured, the top
     ``refine_top_n`` ranked rows are refined with real greeks + live prices
     from Tastytrade, then the DataFrame is re-scored and re-sorted.
+
+    If ``joey_method`` is True:
+      - Universe is restricted to the curated whitelist (liquid mega-caps + ETFs)
+      - Each ticker is gated through `quality_filter.check_quality` first:
+        $40+ price, 5M+ avg volume, above 200DMA, weeklies, no earnings in 14d
+      - `options.analyze_ticker` uses tighter LEAP delta (0.70-0.85), requires
+        short strike above LEAP breakeven, and a higher yield floor (~18% ann)
     """
-    tickers = universe.build_universe(force_refresh=force_refresh_universe)
+    if joey_method:
+        tickers = list(JOEY_WHITELIST)
+    else:
+        tickers = universe.build_universe(force_refresh=force_refresh_universe)
     if limit:
         tickers = tickers[:limit]
+
+    # Quality pre-gate (Joey's method only): drop tickers that fail hard rules
+    # before we spend time pulling option chains for them.
+    quality_results: dict[str, object] = {}
+    if joey_method:
+        passed: list[str] = []
+        q_done = 0
+        q_total = len(tickers)
+        if quality_progress_cb:
+            try:
+                quality_progress_cb(q_done, q_total)
+            except Exception:
+                pass
+        with cf.ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futs = {ex.submit(_safe_quality_check, t): t for t in tickers}
+            for fut in cf.as_completed(futs):
+                q_done += 1
+                t, qr = fut.result()
+                if qr is not None:
+                    quality_results[t] = qr
+                    if qr.passed:
+                        passed.append(t)
+                if quality_progress_cb and (q_done % 2 == 0 or q_done == q_total):
+                    try:
+                        quality_progress_cb(q_done, q_total)
+                    except Exception:
+                        pass
+        tickers = passed
+
     total = len(tickers)
 
     rows: list[dict] = []
@@ -56,7 +107,10 @@ def run_scan(
             pass
 
     with cf.ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futs = {ex.submit(_safe_analyze, t, budget): t for t in tickers}
+        futs = {
+            ex.submit(_safe_analyze, t, budget, joey_method): t
+            for t in tickers
+        }
         for fut in cf.as_completed(futs):
             done += 1
             res = fut.result()
